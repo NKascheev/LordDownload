@@ -682,7 +682,6 @@ def fetch_channel_avatar(channel_id: str) -> tuple[bytes, str] | None:
 
 def _match_filter_for_request(
     output_dir: Path,
-    disk_space_path: Path,
     mode: str,
     height: int | None,
     max_file_bytes: int,
@@ -697,11 +696,9 @@ def _match_filter_for_request(
         if estimate and estimate > max_file_bytes:
             return "File is larger than max-filesize"
         required = max(MIN_FREE_DISK_BYTES, int((estimate or 0) * 1.5) + 128 * MIB)
-        paths = {output_dir.resolve(), disk_space_path.resolve()}
         try:
-            for path in paths:
-                if shutil.disk_usage(path).free < required:
-                    return "Not enough free disk space"
+            if shutil.disk_usage(output_dir).free < required:
+                return "Not enough free disk space"
         except OSError:
             return "Not enough free disk space"
         return None
@@ -784,7 +781,6 @@ def _postprocessor_hook(callback: Callable[[dict[str, Any]], None]) -> Callable[
 def _download_options(
     mode: str,
     output_dir: Path,
-    disk_space_path: Path,
     *,
     height: int | None,
     subtitle_lang: str | None,
@@ -800,7 +796,6 @@ def _download_options(
             "max_filesize": max_file_bytes,
             "match_filter": _match_filter_for_request(
                 output_dir,
-                disk_space_path,
                 mode,
                 height,
                 max_file_bytes,
@@ -981,7 +976,6 @@ def download(
     subtitle_lang: str | None = None,
     auto_subtitle: bool = False,
     output_dir: Path,
-    disk_space_path: Path | None = None,
     max_file_bytes: int = 4 * 1024 * MIB,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> DownloadResult:
@@ -1008,34 +1002,19 @@ def download(
         raise DownloadError("file_error", "Не удалось создать папку для загрузки.", http_status=500) from exc
 
     try:
-        disk_space_path = (disk_space_path or output_dir).resolve(strict=True)
-    except OSError as exc:
-        raise DownloadError(
-            "folder_unavailable",
-            "Папка для сохранения не найдена. Выберите другую.",
-            http_status=409,
-        ) from exc
-    if not disk_space_path.is_dir():
-        raise DownloadError(
-            "folder_unavailable",
-            "Папка для сохранения не найдена. Выберите другую.",
-            http_status=409,
-        )
-    try:
-        for path in {output_dir, disk_space_path}:
-            free = shutil.disk_usage(path).free
-            if free < MIN_FREE_DISK_BYTES:
-                raise DownloadError(
-                    "disk_full",
-                    "На диске слишком мало свободного места.",
-                    http_status=507,
-                )
+        free = shutil.disk_usage(output_dir).free
     except OSError as exc:
         raise DownloadError(
             "disk_unavailable",
             "Не удалось проверить свободное место на диске.",
             http_status=500,
         ) from exc
+    if free < MIN_FREE_DISK_BYTES:
+        raise DownloadError(
+            "disk_full",
+            "На диске слишком мало свободного места.",
+            http_status=507,
+        )
 
     if progress is not None:
         try:
@@ -1046,7 +1025,6 @@ def download(
     options = _download_options(
         mode,
         output_dir,
-        disk_space_path,
         height=height,
         subtitle_lang=subtitle_lang,
         auto_subtitle=auto_subtitle,

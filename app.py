@@ -10,7 +10,6 @@ JSON-состояния заданий. Готовый файл отдаётся
 from __future__ import annotations
 
 import argparse
-import ctypes
 import hmac
 import json
 import logging
@@ -19,7 +18,6 @@ import os
 import re
 import secrets
 import shutil
-import signal
 import sys
 import threading
 import time
@@ -254,12 +252,11 @@ class JobManager:
 
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self._clean_stale_directories()
-        self._cleanup_thread = threading.Thread(
+        threading.Thread(
             target=self._cleanup_loop,
             name="youtube-downloader-cleanup",
             daemon=True,
-        )
-        self._cleanup_thread.start()
+        ).start()
 
     def _clean_stale_directories(self) -> None:
         for child in self.jobs_root.iterdir():
@@ -453,11 +450,9 @@ class JobManager:
     def public(self, job: Job) -> dict[str, Any]:
         with self._lock:
             data: dict[str, Any] = {
-                "job_id": job.job_id,
                 "status": job.status,
                 "phase": job.phase,
                 "progress": round(job.progress, 1),
-                "mode": job.mode,
                 "downloaded_bytes": job.downloaded_bytes,
                 "total_bytes": job.total_bytes,
                 "speed": job.speed,
@@ -472,7 +467,6 @@ class JobManager:
                 data["file"] = {
                     "name": job.filename,
                     "size": job.size,
-                    "type": job.content_type,
                     "url": f"/api/jobs/{job.job_id}/file",
                 }
             if job.status == "error":
@@ -587,9 +581,7 @@ class DownloaderServer(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.config.port}"
 
     def server_close(self) -> None:
-        jobs = getattr(self, "jobs", None)
-        if jobs is not None:
-            jobs.shutdown()
+        self.jobs.shutdown()
         super().server_close()
 
     def handle_error(self, request: Any, client_address: Any) -> None:
@@ -1113,72 +1105,6 @@ def _format_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return value
 
 
-def _watch_console_window(server: DownloaderServer) -> threading.Event:
-    """Остановить сервер, если его консольное окно было закрыто.
-
-    На Windows процесс не всегда завершается мгновенно при закрытии консоли,
-    особенно если он был запущен из другого процесса. Сторож проверяет HWND
-    консоли и инициирует штатное завершение сервера.
-    """
-
-    stop_event = threading.Event()
-    if os.name != "nt":
-        return stop_event
-
-    try:
-        kernel32 = ctypes.windll.kernel32
-        user32 = ctypes.windll.user32
-        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
-        user32.IsWindow.argtypes = [ctypes.c_void_p]
-        user32.IsWindow.restype = ctypes.c_bool
-        window_handle = kernel32.GetConsoleWindow()
-    except Exception:
-        logger.debug("Не удалось определить окно консоли", exc_info=True)
-        return stop_event
-
-    if not window_handle:
-        return stop_event
-
-    def watch() -> None:
-        # Даём основному циклу сервера войти в serve_forever().
-        if stop_event.wait(1.0):
-            return
-        while not stop_event.wait(1.0):
-            try:
-                window_alive = bool(user32.IsWindow(window_handle))
-            except Exception:
-                return
-            if window_alive:
-                continue
-            logger.info("Окно консоли закрыто — останавливаю сервер")
-            try:
-                server.shutdown()
-            except Exception:
-                logger.debug("Не удалось штатно остановить сервер", exc_info=True)
-            return
-
-    threading.Thread(
-        target=watch,
-        name="console-watchdog",
-        daemon=True,
-    ).start()
-    return stop_event
-
-
-def _install_signal_handlers() -> None:
-    def stop(_signum: int, _frame: Any) -> None:
-        raise KeyboardInterrupt
-
-    for name in ("SIGTERM", "SIGBREAK"):
-        signum = getattr(signal, name, None)
-        if signum is None:
-            continue
-        try:
-            signal.signal(signum, stop)
-        except (OSError, ValueError):
-            logger.debug("Не удалось установить обработчик %s", name)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Локальный загрузчик YouTube")
     parser.add_argument(
@@ -1217,7 +1143,6 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    _install_signal_handlers()
     if not 16 <= args.max_file_mb <= 16384:
         parser.error("--max-file-mb должен быть в диапазоне 16–16384")
     if not 1 <= args.job_ttl_min <= 1440:
@@ -1241,8 +1166,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    console_stop = _watch_console_window(server)
-
     url = server.base_url + "/"
     print(flush=True)
     print("  Загрузчик запущен", flush=True)
@@ -1258,11 +1181,6 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nОстановка загрузчика…", flush=True)
     finally:
-        console_stop.set()
-        try:
-            server.shutdown()
-        except Exception:
-            pass
         server.server_close()
     return 0
 
