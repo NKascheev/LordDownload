@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Локальные данные приложения и тестов
+.runtime/
+.test-runtime/
+.test-subtitles/

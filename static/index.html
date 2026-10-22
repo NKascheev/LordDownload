@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#080a12">
+  <meta name="description" content="Локальное приложение для скачивания видео с YouTube в MP4, аудио в MP3 и субтитров в TXT.">
+  <title>Скачать видео с YouTube</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true">
+    <div class="glow glow-one"></div>
+    <div class="glow glow-two"></div>
+    <div class="grid"></div>
+  </div>
+
+  <main class="shell">
+    <section class="intro" aria-labelledby="intro-title">
+      <p class="intro-kicker">Локальный загрузчик</p>
+      <h1 id="intro-title">Скачать видео, музыку или субтитры</h1>
+      <p class="intro-text">Вставьте ссылку на YouTube и выберите нужный формат. Всё обрабатывается на этом компьютере, а готовый файл сохраняется в папку загрузок браузера.</p>
+    </section>
+
+    <section class="panel search-panel" aria-label="Ссылка на видео">
+      <div class="paneltop">
+        <span class="section-label">Ссылка на видео</span>
+        <span class="format-note">MP4 · MP3 · TXT</span>
+      </div>
+      <form id="link-form" novalidate>
+        <div class="url-field">
+          <svg class="field-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M10.6 13.4a4.2 4.2 0 0 0 6 0l2.5-2.5a4.24 4.24 0 0 0-6-6l-1.2 1.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <path d="M13.4 10.6a4.2 4.2 0 0 0-6 0l-2.5 2.5a4.24 4.24 0 0 0 6 6l1.2-1.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+          <label class="sr-only" for="url">Ссылка на видео YouTube</label>
+          <input
+            id="url"
+            name="url"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            maxlength="2048"
+            placeholder="https://www.youtube.com/watch?v=..."
+            aria-describedby="url-hint"
+            required
+          >
+          <button class="ghost paste-btn" id="paste-btn" type="button">Вставить</button>
+        </div>
+        <button class="primary analyze-btn" id="analyze-btn" type="submit" disabled>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="analyze-label">Получить варианты</span>
+          <svg class="arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M4.5 10h11M11 5.5l4.5 4.5-4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </form>
+      <p class="hint" id="url-hint">Поддерживаются youtube.com, youtu.be и music.youtube.com.</p>
+
+      <div class="alert" id="error" role="alert" hidden>
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M10 6.2v4.6M10 14.1v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <circle cx="10" cy="10" r="7.3" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+        <span id="error-text"></span>
+      </div>
+    </section>
+
+    <section class="result" id="result" aria-labelledby="video-title" hidden>
+      <div class="video-card">
+        <div class="video-head">
+          <div class="video-preview">
+            <img id="video-thumbnail" alt="" hidden>
+            <span class="preview-fallback" id="video-thumbnail-fallback" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none">
+                <rect x="5" y="10" width="38" height="28" rx="8" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M20.5 18.8v10.4L29 24l-8.5-5.2Z" fill="currentColor"/>
+              </svg>
+            </span>
+            <span class="duration-badge" id="video-duration" hidden></span>
+          </div>
+
+          <div class="video-copy">
+            <p class="video-kicker">Видео найдено</p>
+            <h2 id="video-title"></h2>
+            <div class="channel-row">
+              <span class="channel-avatar" aria-hidden="true">
+                <img id="channel-avatar" alt="" hidden>
+                <span class="channel-avatar-fallback" id="channel-avatar-fallback">
+                  <svg viewBox="0 0 20 20" fill="none">
+                    <circle cx="10" cy="7" r="3" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M4.5 16c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
+                </span>
+              </span>
+              <p class="video-channel" id="video-channel"></p>
+            </div>
+            <div class="video-chips" aria-label="Сведения о видео">
+              <span class="chip" id="video-qualities"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="download-box">
+          <div class="mode-tabs" id="mode-tabs" role="tablist" aria-label="Что скачать">
+            <button class="mode-tab is-active" id="tab-video" type="button" role="tab" aria-selected="true" aria-controls="mode-panel" tabindex="0" data-mode="video" disabled>
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <rect x="2.4" y="4.2" width="15.2" height="11.6" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M8.2 7.6v4.8l4.2-2.4-4.2-2.4Z" fill="currentColor"/>
+              </svg>
+              Видео
+            </button>
+            <button class="mode-tab" id="tab-audio" type="button" role="tab" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="audio" disabled>
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M7.3 14.2V5.8L15 4.2v8.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="5.2" cy="14.8" r="2.2" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="12.9" cy="13.2" r="2.2" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+              Только звук
+            </button>
+            <button class="mode-tab" id="tab-subtitles" type="button" role="tab" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="subtitles" disabled>
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <rect x="2.5" y="3.7" width="15" height="12.6" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M5.3 8.1h4.2M5.3 11.7h6.2M13.1 8.1h1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              Субтитры
+            </button>
+          </div>
+
+          <div class="mode-panel" id="mode-panel" role="tabpanel" aria-labelledby="tab-video">
+            <div class="field" id="field-video">
+              <div class="field-label-row">
+                <label for="quality">Качество видео</label>
+                <span class="field-badge">MP4</span>
+              </div>
+              <div class="select-wrap">
+                <select id="quality" aria-describedby="quality-hint" disabled></select>
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="m3.5 6 4.5 4.5L12.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <p class="hint" id="quality-hint">Доступны все качества, которые отдаёт YouTube для этого видео.</p>
+            </div>
+
+            <div class="field" id="field-audio" hidden>
+              <div class="field-label-row">
+                <span class="field-label">Формат звука</span>
+                <span class="field-badge">MP3</span>
+              </div>
+              <div class="static-value">
+                <span class="static-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" fill="none">
+                    <path d="M7.3 14.2V5.8L15 4.2v8.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="5.2" cy="14.8" r="2.2" stroke="currentColor" stroke-width="1.5"/>
+                    <circle cx="12.9" cy="13.2" r="2.2" stroke="currentColor" stroke-width="1.5"/>
+                  </svg>
+                </span>
+                <span>MP3 · 192 кбит/с</span>
+              </div>
+              <p class="hint">Лучшая доступная звуковая дорожка будет преобразована в MP3.</p>
+            </div>
+
+            <div class="field" id="field-subtitles" hidden>
+              <div class="field-label-row">
+                <label for="subtitle">Язык субтитров</label>
+                <span class="field-badge">TXT</span>
+              </div>
+              <div class="select-wrap">
+                <select id="subtitle" aria-describedby="subtitle-hint" disabled></select>
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="m3.5 6 4.5 4.5L12.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <p class="hint" id="subtitle-hint">Таймкоды и разметка будут убраны — останется читаемый текст.</p>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="primary download-btn" id="download-btn" type="button" disabled>
+              <span class="spinner" aria-hidden="true"></span>
+              <svg class="download-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M10 3.5v8.2M6.7 8.8 10 12.1l3.3-3.3M4 15.8h12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span id="download-label">Скачать</span>
+            </button>
+            <span class="file-note" id="file-note"></span>
+          </div>
+        </div>
+
+        <div class="progress-panel" id="progress-panel" aria-live="polite" hidden>
+          <div class="progress-top">
+            <span class="progress-phase" id="progress-phase">Скачивание…</span>
+            <span class="progress-percent" id="progress-percent"></span>
+          </div>
+          <progress class="progress-bar" id="progress-bar" max="100" value="0" aria-label="Прогресс скачивания">0%</progress>
+          <div class="progress-meta">
+            <span id="progress-detail"></span>
+            <span id="progress-speed"></span>
+          </div>
+        </div>
+
+        <div class="ready-panel" id="ready-panel" aria-live="polite" hidden>
+          <span class="ready-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="m6.5 12.2 3.6 3.6 7.4-7.6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <div class="ready-copy">
+            <strong>Файл готов</strong>
+            <p id="ready-name"></p>
+          </div>
+          <a class="secondary ready-save-link" id="save-link" href="#" download>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M10 3.5v8.2M6.7 8.8 10 12.1l3.3-3.3M4 15.8h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Скачать файл
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Файлы сохраняются в папку загрузок браузера. Временные файлы задания удаляются автоматически.</p>
+      <p>Скачивайте только тот контент, на который у вас есть права.</p>
+    </footer>
+  </main>
+
+  <noscript>
+    <div class="noscript">Для работы интерфейса нужен JavaScript.</div>
+  </noscript>
+</body>
+</html>
