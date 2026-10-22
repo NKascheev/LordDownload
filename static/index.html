@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#070914">
-  <meta name="description" content="Локальное приложение для скачивания видео с YouTube в MP4, аудио в MP3 и субтитров в TXT.">
-  <title>Скачать видео с YouTube</title>
+  <meta name="description" content="Локальное приложение для скачивания видео с YouTube и Instagram в MP4, аудио в MP3 и субтитров в TXT.">
+  <title>Скачать видео с YouTube и Instagram</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
@@ -22,13 +22,30 @@
     <section class="intro" aria-labelledby="intro-title">
       <p class="intro-kicker">Локальный загрузчик</p>
       <h1 id="intro-title">Скачать видео, музыку или субтитры</h1>
-      <p class="intro-text">Вставьте ссылку на YouTube и выберите нужный формат. Всё обрабатывается на этом компьютере, а готовый файл сохраняется в папку загрузок браузера.</p>
+      <p class="intro-text">Вставьте ссылку на YouTube или Instagram и выберите нужный формат. Всё обрабатывается на этом компьютере, а готовый файл сохраняется в папку загрузок браузера.</p>
     </section>
 
     <section class="panel search-panel" aria-label="Ссылка на видео">
       <div class="paneltop">
         <span class="section-label">Ссылка на видео</span>
         <span class="format-note">MP4 · MP3 · TXT</span>
+      </div>
+      <div class="source-switch" id="source-switch" role="group" aria-label="Источник видео">
+        <button class="source-btn is-active" type="button" data-source="youtube" aria-pressed="true">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <rect x="2.3" y="4.8" width="15.4" height="10.4" rx="3.2" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M8.3 7.8v4.4l3.8-2.2-3.8-2.2Z" fill="currentColor"/>
+          </svg>
+          YouTube
+        </button>
+        <button class="source-btn" type="button" data-source="instagram" aria-pressed="false">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <rect x="3.1" y="3.1" width="13.8" height="13.8" rx="4.2" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="10" cy="10" r="3.2" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="14.3" cy="5.7" r="0.9" fill="currentColor"/>
+          </svg>
+          Instagram
+        </button>
       </div>
       <form id="link-form" novalidate>
         <div class="url-field">

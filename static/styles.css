@@ -262,6 +262,7 @@ button:disabled {
 .primary:focus-visible,
 .ghost:focus-visible,
 .secondary:focus-visible,
+.source-btn:focus-visible,
 .mode-tab:focus-visible,
 select:focus-visible,
 input:focus-visible {
@@ -348,6 +349,53 @@ input:focus-visible {
   font-size: 10.5px;
   font-weight: 650;
   letter-spacing: 0.06em;
+}
+
+.source-switch {
+  display: inline-flex;
+  gap: 3px;
+  margin: 0 0 12px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(4, 6, 14, 0.42);
+}
+
+.source-btn {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.source-btn svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.source-btn:hover:not(:disabled):not(.is-active) {
+  color: var(--muted-strong);
+  background: rgba(157, 169, 255, 0.035);
+}
+
+.source-btn.is-active {
+  border-color: rgba(163, 176, 255, 0.13);
+  background: rgba(133, 153, 255, 0.09);
+  color: var(--text);
+}
+
+.source-btn:disabled {
+  opacity: 0.4;
 }
 
 #link-form {
@@ -1030,6 +1078,15 @@ select optgroup {
   .search-panel {
     padding: 13px;
     border-radius: 21px;
+  }
+
+  .source-switch {
+    display: flex;
+    width: 100%;
+  }
+
+  .source-btn {
+    flex: 1;
   }
 
   .intro {

@@ -66,6 +66,61 @@ class UrlValidationTests(unittest.TestCase):
             downloader.normalize_youtube_url("https://youtu.be/" + "a" * 3000)
 
 
+class InstagramUrlValidationTests(unittest.TestCase):
+    def test_accepts_and_canonicalizes_instagram_urls(self) -> None:
+        cases = {
+            "https://www.instagram.com/p/BQ0eAlwhDrw/": (
+                "https://www.instagram.com/p/BQ0eAlwhDrw/"
+            ),
+            "https://www.instagram.com/reel/Chunk8-jurw/?igsh=abc": (
+                "https://www.instagram.com/reel/Chunk8-jurw/"
+            ),
+            "https://instagram.com/reels/Chunk8-jurw/": (
+                "https://www.instagram.com/reel/Chunk8-jurw/"
+            ),
+            "http://m.instagram.com/tv/BkfuX9UB-eK": (
+                "https://www.instagram.com/tv/BkfuX9UB-eK/"
+            ),
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(downloader.normalize_instagram_url(value), expected)
+
+    def test_rejects_unsafe_or_non_post_urls(self) -> None:
+        cases = [
+            None,
+            "",
+            "https://evil.example/reel/Chunk8-jurw/",
+            "https://instagram.com.evil.example/reel/Chunk8-jurw/",
+            "https://www.instagram.com/explore/",
+            "https://www.instagram.com/instagram/",
+            "https://www.instagram.com/reel/abc/",
+            "https://www.instagram.com/reel/Chunk8-jurw/extra",
+            "https://user:pass@instagram.com/reel/Chunk8-jurw/",
+            "https://instagram.com:443/reel/Chunk8-jurw/",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(DownloadError):
+                    downloader.normalize_instagram_url(value)
+
+    def test_media_normalizer_dispatches_by_source(self) -> None:
+        self.assertEqual(
+            downloader.normalize_media_url("https://youtu.be/dQw4w9WgXcQ", "youtube"),
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        )
+        self.assertEqual(
+            downloader.normalize_media_url(
+                "https://www.instagram.com/reel/Chunk8-jurw/",
+                "instagram",
+            ),
+            "https://www.instagram.com/reel/Chunk8-jurw/",
+        )
+        with self.assertRaises(DownloadError):
+            downloader.normalize_media_url("https://example.com/", "unknown")
+
+
 class FilenameTests(unittest.TestCase):
     def test_removes_path_separators_and_controls(self) -> None:
         value = downloader.sanitize_filename("../../evil\x00name.mp4")
@@ -210,6 +265,12 @@ class MetadataCollectionTests(unittest.TestCase):
             downloader._video_format_selector(9999)
         with self.assertRaises(DownloadError):
             downloader._video_format_selector(-1)
+
+    def test_instagram_selector_is_numeric_only(self) -> None:
+        selector = downloader._instagram_format_selector(1280)
+        self.assertIn("height=1280", selector)
+        with self.assertRaises(DownloadError):
+            downloader._instagram_format_selector(9999)
 
 
 class ChannelAvatarTests(unittest.TestCase):

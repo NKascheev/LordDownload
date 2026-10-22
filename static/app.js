@@ -5,7 +5,9 @@
 
   const els = {
     form: $("link-form"),
+    sourceSwitch: $("source-switch"),
     url: $("url"),
+    urlHint: $("url-hint"),
     paste: $("paste-btn"),
     analyze: $("analyze-btn"),
     analyzeLabel: $("analyze-label"),
@@ -45,6 +47,7 @@
   const state = {
     csrf: null,
     sessionPromise: null,
+    source: "youtube",
     info: null,
     mode: "video",
     analyzing: false,
@@ -82,6 +85,7 @@
 
   function init() {
     bindEvents();
+    updateSourceUi();
     els.analyze.disabled = true;
     ensureSession()
       .then(() => {
@@ -97,6 +101,7 @@
 
   function bindEvents() {
     els.form.addEventListener("submit", handleAnalyze);
+    els.sourceSwitch.addEventListener("click", handleSourceChange);
     els.paste.addEventListener("click", pasteFromClipboard);
     els.url.addEventListener("input", handleUrlInput);
     els.download.addEventListener("click", startDownload);
@@ -113,6 +118,43 @@
         state.analyzeController.abort();
       }
     });
+  }
+
+  function updateSourceUi() {
+    const buttons = els.sourceSwitch.querySelectorAll("[data-source]");
+    for (const button of buttons) {
+      const active = button.dataset.source === state.source;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    if (state.source === "instagram") {
+      els.url.placeholder = "https://www.instagram.com/reel/...";
+      els.urlHint.textContent =
+        "Поддерживаются ссылки на публикации Instagram: /p/, /reel/ и /tv/.";
+    } else {
+      els.url.placeholder = "https://www.youtube.com/watch?v=...";
+      els.urlHint.textContent =
+        "Поддерживаются youtube.com, youtu.be и music.youtube.com.";
+    }
+  }
+
+  function handleSourceChange(event) {
+    const button = event.target.closest("[data-source]");
+    if (!button || button.disabled || state.analyzing || state.downloading) {
+      return;
+    }
+    const source = button.dataset.source;
+    if (source === state.source) {
+      return;
+    }
+    state.source = source;
+    if (els.url.value.trim() && !looksLikeSourceUrl(els.url.value, source)) {
+      els.url.value = "";
+    }
+    resetResult();
+    clearError();
+    updateSourceUi();
+    els.url.focus();
   }
 
   async function ensureSession() {
@@ -263,12 +305,16 @@
 
     const rawUrl = els.url.value.trim();
     if (!rawUrl) {
-      showError("Вставьте ссылку на видео YouTube.");
+      showError("Вставьте ссылку на видео.");
       els.url.focus();
       return;
     }
-    if (!looksLikeYouTubeUrl(rawUrl)) {
-      showError("Похоже, это не ссылка на YouTube. Поддерживаются youtube.com и youtu.be.");
+    if (!looksLikeSourceUrl(rawUrl, state.source)) {
+      showError(
+        state.source === "instagram"
+          ? "Похоже, это не ссылка на публикацию Instagram."
+          : "Похоже, это не ссылка на YouTube."
+      );
       els.url.focus();
       return;
     }
@@ -285,7 +331,7 @@
       await ensureSession();
       const info = await api("/api/info", {
         method: "POST",
-        body: { url: rawUrl },
+        body: { url: rawUrl, source: state.source },
         signal: state.analyzeController.signal,
       });
       if (sequence !== state.requestSequence) {
@@ -316,7 +362,7 @@
     }
   }
 
-  function looksLikeYouTubeUrl(value) {
+  function looksLikeSourceUrl(value, source) {
     let parsed;
     try {
       parsed = new URL(value);
@@ -327,6 +373,12 @@
       return false;
     }
     const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    if (source === "instagram") {
+      return (
+        ["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host) &&
+        /^\/(p|reel|reels|tv)\/[A-Za-z0-9_-]{5,30}\/?$/.test(parsed.pathname)
+      );
+    }
     return [
       "youtube.com",
       "www.youtube.com",
@@ -340,8 +392,10 @@
   }
 
   function renderInfo(info) {
-    els.title.textContent = info.title || "Видео YouTube";
-    els.channel.textContent = info.channel || "YouTube";
+    els.title.textContent =
+      info.title || (info.source === "instagram" ? "Видео Instagram" : "Видео YouTube");
+    els.channel.textContent =
+      info.channel || (info.source === "instagram" ? "Instagram" : "YouTube");
     renderThumbnail(info);
     renderChannelAvatar(info);
 
@@ -688,6 +742,9 @@
 
     els.url.disabled = busy;
     els.paste.disabled = state.analyzing;
+    els.sourceSwitch.querySelectorAll("[data-source]").forEach((button) => {
+      button.disabled = busy;
+    });
     els.analyze.disabled = busy;
     els.analyze.classList.toggle("is-loading", state.analyzing);
     els.analyze.setAttribute("aria-busy", state.analyzing ? "true" : "false");
@@ -720,6 +777,7 @@
 
     const body = {
       url: state.info.url,
+      source: state.source,
       mode: state.mode,
     };
 

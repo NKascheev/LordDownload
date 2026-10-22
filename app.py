@@ -1,4 +1,4 @@
-"""Локальный веб-сервер для скачивания видео с YouTube.
+"""Локальный веб-сервер для скачивания видео с YouTube и Instagram.
 
 Сервер слушает только 127.0.0.1. Все изменяющие запросы защищены проверкой
 Origin, CSRF-токеном и обязательным JSON Content-Type. Наружу отдаются только
@@ -158,6 +158,7 @@ class AppConfig:
 class Job:
     job_id: str
     url: str
+    source: str
     mode: str
     height: int | None
     subtitle_lang: str | None
@@ -304,6 +305,7 @@ class JobManager:
         self,
         *,
         url: str,
+        source: str,
         mode: str,
         height: int | None,
         subtitle_lang: str | None,
@@ -321,6 +323,7 @@ class JobManager:
             job = Job(
                 job_id=job_id,
                 url=url,
+                source=source,
                 mode=mode,
                 height=height,
                 subtitle_lang=subtitle_lang,
@@ -351,6 +354,7 @@ class JobManager:
             result = downloader.download(
                 job.url,
                 job.mode,
+                source=job.source,
                 height=job.height,
                 subtitle_lang=job.subtitle_lang,
                 auto_subtitle=job.auto_subtitle,
@@ -835,36 +839,52 @@ class DownloaderHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/info":
-            self._reject_unknown_fields(data, {"url"})
+            self._reject_unknown_fields(data, {"url", "source"})
             self._check_rate_limit(client_ip, "info", limit=30, window=60)
             raw_url = data.get("url")
+            source = data.get("source", "youtube")
             if not isinstance(raw_url, str):
                 raise ClientError(HTTPStatus.BAD_REQUEST, "invalid_url", "Вставьте ссылку на видео.")
+            if source not in downloader.SOURCES:
+                raise ClientError(HTTPStatus.BAD_REQUEST, "invalid_source", "Неизвестный источник видео.")
             try:
-                url = downloader.normalize_youtube_url(raw_url)
+                url = downloader.normalize_media_url(raw_url, source)
             except DownloadError as exc:
                 raise ClientError(exc.http_status, exc.code, exc.message) from exc
 
-            info = self.server.info_cache.get(url)
+            cache_key = f"{source}:{url}"
+            info = self.server.info_cache.get(cache_key)
             if info is None:
                 try:
-                    info = downloader.get_video_info(url)
+                    info = downloader.get_video_info(url, source)
                 except DownloadError as exc:
                     raise ClientError(exc.http_status, exc.code, exc.message) from exc
-                self.server.info_cache.set(url, info)
+                self.server.info_cache.set(cache_key, info)
             self._send_json(HTTPStatus.OK, info)
             return
 
-        self._reject_unknown_fields(data, {"url", "mode", "height", "subtitle_lang", "auto_subtitle"})
+        self._reject_unknown_fields(
+            data,
+            {"url", "source", "mode", "height", "subtitle_lang", "auto_subtitle"},
+        )
         self._check_rate_limit(client_ip, "download", limit=12, window=60)
         raw_url = data.get("url")
+        source = data.get("source", "youtube")
         mode = data.get("mode")
         if not isinstance(raw_url, str):
             raise ClientError(HTTPStatus.BAD_REQUEST, "invalid_url", "Вставьте ссылку на видео.")
+        if source not in downloader.SOURCES:
+            raise ClientError(HTTPStatus.BAD_REQUEST, "invalid_source", "Неизвестный источник видео.")
         if mode not in {"video", "audio", "subtitles"}:
             raise ClientError(HTTPStatus.BAD_REQUEST, "invalid_mode", "Неизвестный режим скачивания.")
+        if source == "instagram" and mode == "subtitles":
+            raise ClientError(
+                HTTPStatus.BAD_REQUEST,
+                "subtitles_unavailable",
+                "У Instagram нет доступных субтитров.",
+            )
         try:
-            url = downloader.normalize_youtube_url(raw_url)
+            url = downloader.normalize_media_url(raw_url, source)
         except DownloadError as exc:
             raise ClientError(exc.http_status, exc.code, exc.message) from exc
 
@@ -901,6 +921,7 @@ class DownloaderHandler(BaseHTTPRequestHandler):
         try:
             job_id = self.server.jobs.create(
                 url=url,
+                source=source,
                 mode=mode,
                 height=height,
                 subtitle_lang=subtitle_lang,
@@ -1121,7 +1142,7 @@ def _format_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Локальный загрузчик YouTube")
+    parser = argparse.ArgumentParser(description="Локальный загрузчик YouTube и Instagram")
     parser.add_argument(
         "--port",
         type=_port,

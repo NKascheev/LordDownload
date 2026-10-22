@@ -37,7 +37,9 @@ MIB = 1024 * 1024
 THUMBNAIL_URL_TEMPLATE = "https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 _AVATAR_HOSTS = frozenset({"yt3.googleusercontent.com", "yt3.ggpht.com"})
 
-_ALLOWED_HOSTS = frozenset(
+SOURCES = ("youtube", "instagram")
+
+_YOUTUBE_HOSTS = frozenset(
     {
         "youtube.com",
         "www.youtube.com",
@@ -49,10 +51,12 @@ _ALLOWED_HOSTS = frozenset(
         "www.youtu.be",
     }
 )
+_INSTAGRAM_HOSTS = frozenset({"instagram.com", "www.instagram.com", "m.instagram.com"})
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _SUBTITLE_LANG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,34}$")
 _SHORT_PATH_RE = re.compile(r"^/(shorts|embed|live|v)/([A-Za-z0-9_-]{11})/?$")
+_INSTAGRAM_PATH_RE = re.compile(r"^/(p|reel|reels|tv)/([A-Za-z0-9_-]{5,30})/?$")
 _WATCH_PATHS = frozenset({"/watch", "/watch/"})
 _CONTROL_OR_FORMAT_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2060-\u2069]")
 _WINDOWS_RESERVED_RE = re.compile(
@@ -99,21 +103,12 @@ class _QuietLogger:
         logger.debug("yt-dlp error: %s", message)
 
 
-def normalize_youtube_url(raw_url: object) -> str:
-    """Проверить и нормализовать ссылку до одного канонического адреса видео.
-
-    Разрешены только https-ссылки YouTube на конкретное видео. Плейлисты,
-    каналы, произвольные хосты, порты и учётные данные отклоняются. Это
-    одновременно защищает от SSRF и не даёт превратить загрузчик в средство
-    доступа к произвольным сетевым адресам.
-    """
-
+def _parse_http_url(raw_url: object, service: str) -> Any:
     if not isinstance(raw_url, str):
-        raise DownloadError("invalid_url", "Вставьте ссылку на видео YouTube.", http_status=400)
-
+        raise DownloadError("invalid_url", f"Вставьте ссылку на {service}.", http_status=400)
     value = raw_url.strip()
     if not value:
-        raise DownloadError("invalid_url", "Вставьте ссылку на видео YouTube.", http_status=400)
+        raise DownloadError("invalid_url", f"Вставьте ссылку на {service}.", http_status=400)
     if len(value) > MAX_URL_LENGTH:
         raise DownloadError("invalid_url", "Ссылка слишком длинная.", http_status=400)
     if _CONTROL_OR_FORMAT_RE.search(value):
@@ -129,9 +124,15 @@ def normalize_youtube_url(raw_url: object) -> str:
         raise DownloadError("invalid_url", "Поддерживаются только ссылки http(s).", http_status=400)
     if parsed.username is not None or parsed.password is not None or port is not None:
         raise DownloadError("invalid_url", "Ссылка содержит недопустимые части.", http_status=400)
+    return parsed
 
+
+def normalize_youtube_url(raw_url: object) -> str:
+    """Проверить и нормализовать ссылку YouTube до канонического адреса."""
+
+    parsed = _parse_http_url(raw_url, "YouTube")
     host = (parsed.hostname or "").rstrip(".").lower()
-    if host not in _ALLOWED_HOSTS:
+    if host not in _YOUTUBE_HOSTS:
         raise DownloadError(
             "unsupported_host",
             "Поддерживаются только ссылки на youtube.com и youtu.be.",
@@ -143,16 +144,15 @@ def normalize_youtube_url(raw_url: object) -> str:
         match = re.fullmatch(r"/([A-Za-z0-9_-]{11})/?", parsed.path)
         if match:
             video_id = match.group(1)
+    elif parsed.path in _WATCH_PATHS:
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        ids = query.get("v", [])
+        if len(ids) == 1 and _VIDEO_ID_RE.fullmatch(ids[0]):
+            video_id = ids[0]
     else:
-        if parsed.path in _WATCH_PATHS:
-            query = parse_qs(parsed.query, keep_blank_values=True)
-            ids = query.get("v", [])
-            if len(ids) == 1 and _VIDEO_ID_RE.fullmatch(ids[0]):
-                video_id = ids[0]
-        else:
-            match = _SHORT_PATH_RE.fullmatch(parsed.path)
-            if match:
-                video_id = match.group(2)
+        match = _SHORT_PATH_RE.fullmatch(parsed.path)
+        if match:
+            video_id = match.group(2)
 
     if not video_id:
         raise DownloadError(
@@ -160,8 +160,39 @@ def normalize_youtube_url(raw_url: object) -> str:
             "Нужна ссылка на конкретное видео YouTube, а не на плейлист или канал.",
             http_status=400,
         )
-
     return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def normalize_instagram_url(raw_url: object) -> str:
+    """Проверить и нормализовать ссылку Instagram на публикацию или Reels."""
+
+    parsed = _parse_http_url(raw_url, "Instagram")
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if host not in _INSTAGRAM_HOSTS:
+        raise DownloadError(
+            "unsupported_host",
+            "Поддерживаются только ссылки на instagram.com.",
+            http_status=400,
+        )
+    match = _INSTAGRAM_PATH_RE.fullmatch(parsed.path)
+    if not match:
+        raise DownloadError(
+            "invalid_url",
+            "Нужна ссылка на публикацию или Reels Instagram.",
+            http_status=400,
+        )
+    kind = match.group(1)
+    if kind == "reels":
+        kind = "reel"
+    return f"https://www.instagram.com/{kind}/{match.group(2)}/"
+
+
+def normalize_media_url(raw_url: object, source: str = "youtube") -> str:
+    if source == "youtube":
+        return normalize_youtube_url(raw_url)
+    if source == "instagram":
+        return normalize_instagram_url(raw_url)
+    raise DownloadError("invalid_source", "Неизвестный источник видео.", http_status=400)
 
 
 def sanitize_filename(value: object, *, fallback: str = "youtube-video") -> str:
@@ -324,7 +355,10 @@ def _collect_subtitles(info: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _ensure_playable(info: dict[str, Any]) -> None:
     if info.get("_type") == "playlist":
-        raise DownloadError("playlist", "Плейлисты не поддерживаются. Вставьте ссылку на видео.")
+        raise DownloadError(
+            "playlist",
+            "Плейлисты и карусели не поддерживаются. Вставьте ссылку на одно видео.",
+        )
     if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming"}:
         raise DownloadError("live", "Прямые трансляции и премьеры пока не поддерживаются.")
     availability = str(info.get("availability") or "").lower()
@@ -371,6 +405,16 @@ def _map_ytdlp_error(exc: BaseException, *, context: str) -> DownloadError:
         return DownloadError("file_too_large", "Файл превышает установленный лимит размера.", http_status=413)
     if "private video" in lower or "video is private" in lower:
         return DownloadError("not_available", "Это приватное видео. Доступ к нему закрыт.")
+    if (
+        "login required" in lower
+        or "requires authentication" in lower
+        or "checkpoint_required" in lower
+        or "private account" in lower
+    ):
+        return DownloadError(
+            "login_required",
+            "Для доступа к этому видео требуется вход в аккаунт.",
+        )
     if "age" in lower and ("restricted" in lower or "confirm" in lower):
         return DownloadError(
             "age_restricted",
@@ -482,39 +526,61 @@ def _extract_info(url: str) -> dict[str, Any]:
         raise DownloadError("metadata_failed", "Не удалось получить сведения о видео.", http_status=502) from exc
 
     if not isinstance(info, dict) or info.get("_type") == "playlist":
-        raise DownloadError("playlist", "Плейлисты не поддерживаются. Вставьте ссылку на видео.")
+        raise DownloadError(
+            "playlist",
+            "Плейлисты и карусели не поддерживаются. Вставьте ссылку на одно видео.",
+        )
     _ensure_playable(info)
     return info
 
 
-def get_video_info(raw_url: object) -> dict[str, Any]:
-    """Получить только безопасную часть метаданных для интерфейса."""
+def get_video_info(raw_url: object, source: str = "youtube") -> dict[str, Any]:
+    """Получить безопасную часть метаданных для интерфейса."""
 
-    url = normalize_youtube_url(raw_url)
+    url = normalize_media_url(raw_url, source)
     info = _extract_info(url)
-    title = _clean_text(info.get("title"), 300) or "Видео YouTube"
-    channel = _clean_text(info.get("uploader") or info.get("channel"), 160)
+    fallback_title = "Видео YouTube" if source == "youtube" else "Видео Instagram"
+    title = _clean_text(info.get("title"), 300)
+    if source == "instagram":
+        description = info.get("description")
+        first_line = ""
+        if isinstance(description, str):
+            first_line = next(
+                (line.strip() for line in description.splitlines() if line.strip()),
+                "",
+            )
+        title = _clean_text(first_line, 300) or title
+    title = title or fallback_title
+    channel = _clean_text(
+        info.get("uploader") or info.get("uploader_id") or info.get("channel"),
+        160,
+    )
     duration = _safe_int(info.get("duration"), maximum=48 * 60 * 60)
-    video_id = str(info.get("id") or "")
-    if not _VIDEO_ID_RE.fullmatch(video_id):
-        video_id = parse_qs(urlsplit(url).query).get("v", [""])[0]
 
-    qualities = _collect_qualities(info)
-    subtitles = _collect_subtitles(info)
+    video_id = ""
+    channel_id = ""
+    thumbnail_url = None
+    channel_avatar_url = None
+    if source == "youtube":
+        video_id = str(info.get("id") or "")
+        if not _VIDEO_ID_RE.fullmatch(video_id):
+            video_id = parse_qs(urlsplit(url).query).get("v", [""])[0]
+        channel_id_value = info.get("channel_id")
+        channel_id = channel_id_value.strip() if isinstance(channel_id_value, str) else ""
+        if not _CHANNEL_ID_RE.fullmatch(channel_id):
+            channel_id = ""
+        thumbnail_url = (
+            f"/api/thumbnail/{video_id}" if _VIDEO_ID_RE.fullmatch(video_id) else None
+        )
+        channel_avatar_url = f"/api/avatar/{channel_id}" if channel_id else None
+
     formats = info.get("formats") or []
     has_audio = any(
         isinstance(item, dict) and (item.get("acodec") or "none") != "none" for item in formats
     )
-
-    channel_id_value = info.get("channel_id")
-    channel_id = channel_id_value.strip() if isinstance(channel_id_value, str) else ""
-    if not _CHANNEL_ID_RE.fullmatch(channel_id):
-        channel_id = ""
-
-    thumbnail_url = f"/api/thumbnail/{video_id}" if _VIDEO_ID_RE.fullmatch(video_id) else None
-    channel_avatar_url = f"/api/avatar/{channel_id}" if channel_id else None
     return {
         "url": url,
+        "source": source,
         "video_id": video_id,
         "title": title,
         "channel": channel,
@@ -522,8 +588,8 @@ def get_video_info(raw_url: object) -> dict[str, Any]:
         "channel_avatar_url": channel_avatar_url,
         "duration": duration,
         "thumbnail_url": thumbnail_url,
-        "qualities": qualities,
-        "subtitles": subtitles,
+        "qualities": _collect_qualities(info),
+        "subtitles": _collect_subtitles(info) if source == "youtube" else [],
         "has_audio": has_audio,
     }
 
@@ -709,14 +775,24 @@ def _match_filter_for_request(
 def _video_format_selector(height: int) -> str:
     if not 144 <= height <= MAX_VIDEO_HEIGHT:
         raise DownloadError("invalid_quality", "Недопустимое качество видео.", http_status=400)
-    # Строка собрана только из проверенного целого числа. Никакие данные
-    # пользователя сюда не попадают.
     return (
         f"bv*[height={height}][ext=mp4][vcodec^=avc1]+ba[ext=m4a]/"
         f"bv*[height={height}][ext=mp4]+ba[ext=m4a]/"
         f"bv*[height={height}]+ba/"
         f"b[height={height}][ext=mp4]/"
         f"b[height={height}]"
+    )
+
+
+def _instagram_format_selector(height: int) -> str:
+    if not 144 <= height <= MAX_VIDEO_HEIGHT:
+        raise DownloadError("invalid_quality", "Недопустимое качество видео.", http_status=400)
+    return (
+        f"bv*[height={height}]+ba/"
+        f"bv*[height={height}]/"
+        f"b[height={height}]/"
+        f"b[height<={height}]/"
+        "b"
     )
 
 
@@ -779,6 +855,7 @@ def _postprocessor_hook(callback: Callable[[dict[str, Any]], None]) -> Callable[
 
 
 def _download_options(
+    source: str,
     mode: str,
     output_dir: Path,
     *,
@@ -810,9 +887,14 @@ def _download_options(
     if mode == "video":
         if height is None:
             raise DownloadError("invalid_quality", "Выберите качество видео.", http_status=400)
+        selector = (
+            _video_format_selector(height)
+            if source == "youtube"
+            else _instagram_format_selector(height)
+        )
         options.update(
             {
-                "format": _video_format_selector(height),
+                "format": selector,
                 "merge_output_format": "mp4",
                 "ffmpeg_location": _ffmpeg_executable(),
                 "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
@@ -972,6 +1054,7 @@ def download(
     raw_url: object,
     mode: str,
     *,
+    source: str = "youtube",
     height: int | None = None,
     subtitle_lang: str | None = None,
     auto_subtitle: bool = False,
@@ -981,8 +1064,16 @@ def download(
 ) -> DownloadResult:
     """Скачать один файл в заранее созданный каталог задания."""
 
+    if source not in SOURCES:
+        raise DownloadError("invalid_source", "Неизвестный источник видео.", http_status=400)
     if mode not in {"video", "audio", "subtitles"}:
         raise DownloadError("invalid_mode", "Неизвестный режим скачивания.", http_status=400)
+    if source == "instagram" and mode == "subtitles":
+        raise DownloadError(
+            "subtitles_unavailable",
+            "У Instagram нет доступных субтитров.",
+            http_status=400,
+        )
     if mode == "video":
         if not isinstance(height, int) or isinstance(height, bool):
             raise DownloadError("invalid_quality", "Выберите качество видео.", http_status=400)
@@ -994,7 +1085,7 @@ def download(
         if not isinstance(auto_subtitle, bool):
             auto_subtitle = False
 
-    url = normalize_youtube_url(raw_url)
+    url = normalize_media_url(raw_url, source)
     output_dir = output_dir.resolve()
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1023,6 +1114,7 @@ def download(
             logger.debug("Ошибка в progress callback", exc_info=True)
 
     options = _download_options(
+        source,
         mode,
         output_dir,
         height=height,

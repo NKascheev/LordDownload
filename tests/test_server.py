@@ -204,6 +204,25 @@ class ServerSecurityTests(unittest.TestCase):
         status, _, data = self._post_json(
             "/api/download",
             {
+                "url": "https://www.instagram.com/reel/Chunk8-jurw/",
+                "source": "instagram",
+                "mode": "subtitles",
+                "subtitle_lang": "en",
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "subtitles_unavailable")
+
+        status, _, data = self._post_json(
+            "/api/info",
+            {"url": "https://youtu.be/dQw4w9WgXcQ", "source": "unknown"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "invalid_source")
+
+        status, _, data = self._post_json(
+            "/api/download",
+            {
                 "url": "https://youtu.be/dQw4w9WgXcQ",
                 "mode": "subtitles",
                 "subtitle_lang": "../etc",
@@ -274,6 +293,7 @@ class ServerSecurityTests(unittest.TestCase):
         job = app.Job(
             job_id=job_id,
             url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            source="youtube",
             mode="video",
             height=144,
             subtitle_lang=None,
