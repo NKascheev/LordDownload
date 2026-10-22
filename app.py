@@ -447,6 +447,16 @@ class JobManager:
             return None
         return job
 
+    def discard(self, job_id: str) -> bool:
+        """Удалить завершённое задание и его временный файл."""
+
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status not in {"ready", "error"}:
+                return False
+            self._remove_job_locked(job_id)
+            return True
+
     def public(self, job: Job) -> dict[str, Any]:
         with self._lock:
             data: dict[str, Any] = {
@@ -574,7 +584,6 @@ class DownloaderServer(ThreadingHTTPServer):
             job_ttl_seconds=job_ttl_min * 60,
             max_active_jobs=max_active_jobs,
         )
-        logger.info("HTTP-сервер создан на 127.0.0.1:%s", port)
 
     @property
     def base_url(self) -> str:
@@ -606,13 +615,7 @@ class DownloaderHandler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # Не логируем query string и заголовки: там может быть CSRF-токен.
-        path = urlsplit(self.path).path
-        logger.info("%s %s %s", self.command, path, fmt % args)
-
-    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-        path = urlsplit(self.path).path
-        logger.info("%s %s -> %s", self.command, path, code)
+        """Не выводим каждый HTTP-запрос в консоль."""
 
     def do_GET(self) -> None:
         self._handle_safely(self._handle_get)
@@ -810,7 +813,7 @@ class DownloaderHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self) -> None:
         path = urlsplit(self.path).path
-        if path not in {"/api/info", "/api/download"}:
+        if path not in {"/api/info", "/api/download", "/api/jobs/delete"}:
             self._not_found(api=True)
             return
 
@@ -818,6 +821,18 @@ class DownloaderHandler(BaseHTTPRequestHandler):
         self._require_csrf()
         data = self._read_json_body()
         client_ip = self.client_address[0]
+
+        if path == "/api/jobs/delete":
+            self._reject_unknown_fields(data, {"job_id"})
+            self._check_rate_limit(client_ip, "job-delete", limit=120, window=60)
+            job_id = data.get("job_id")
+            if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
+                raise ClientError(HTTPStatus.BAD_REQUEST, "invalid_job", "Некорректное задание.")
+            self._send_json(
+                HTTPStatus.OK,
+                {"deleted": self.server.jobs.discard(job_id)},
+            )
+            return
 
         if path == "/api/info":
             self._reject_unknown_fields(data, {"url"})
@@ -1128,7 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
         "--job-ttl-min",
         type=_positive_int,
         default=_format_env_int("VD_JOB_TTL_MIN", DEFAULT_JOB_TTL_MIN, 1, 1440),
-        help="сколько минут хранить готовые файлы и записи о завершённых заданиях",
+        help="резервный срок хранения временных файлов, минут",
     )
     parser.add_argument(
         "--max-active",
@@ -1139,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
@@ -1170,7 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
     print(flush=True)
     print("  Загрузчик запущен", flush=True)
     print(f"  {url}", flush=True)
-    print("  Закройте это окно или нажмите Ctrl+C, чтобы остановить.", flush=True)
+    print("  Остановить: Ctrl+C или закрыть это окно.", flush=True)
     print(flush=True)
 
     if args.open:

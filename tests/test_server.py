@@ -297,6 +297,11 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertEqual(public["file"]["url"], f"/api/jobs/{job_id}/file")
             self.assertEqual(public["file"]["name"], job.filename)
 
+            status, _, body = self._request("HEAD", f"/api/jobs/{job_id}/file")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, b"")
+            self.assertTrue(file_path.exists())
+
             status, headers, body = self._request("GET", f"/api/jobs/{job_id}/file")
             self.assertEqual(status, 200)
             self.assertEqual(body, b"test-video")
@@ -304,6 +309,21 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertIn("attachment;", headers["content-disposition"])
             self.assertIn("filename*=UTF-8''", headers["content-disposition"])
             self.assertEqual(headers["cache-control"], "private, no-store")
+
+            # Скачивание через браузер не удаляет временный файл.
+            self.assertIsNotNone(self.server.jobs.get(job_id))
+            self.assertTrue(file_path.exists())
+
+            status, _, data = self._post_json(
+                "/api/jobs/delete",
+                {"job_id": job_id},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(data["deleted"])
+            self.assertIsNone(self.server.jobs.get(job_id))
+            self.assertFalse(file_path.exists())
+            status, _, _ = self._request("GET", f"/api/jobs/{job_id}/file")
+            self.assertEqual(status, 404)
         finally:
             with self.server.jobs._lock:
                 self.server.jobs._jobs.pop(job_id, None)

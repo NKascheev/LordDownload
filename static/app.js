@@ -54,6 +54,8 @@
     pollFailures: 0,
     analyzeController: null,
     requestSequence: 0,
+    retainedJobs: [],
+    lastCompletedUrl: null,
   };
 
   const modeMeta = {
@@ -102,7 +104,10 @@
     els.subtitle.addEventListener("change", updateModeSummary);
     els.tabs.addEventListener("click", handleTabClick);
     els.tabs.addEventListener("keydown", handleTabKeydown);
-    window.addEventListener("pagehide", () => {
+    window.addEventListener("pagehide", (event) => {
+      if (!event.persisted) {
+        discardOnExit();
+      }
       stopPolling();
       if (state.analyzeController) {
         state.analyzeController.abort();
@@ -735,6 +740,10 @@
       body.auto_subtitle = option.dataset.auto === "true";
     }
 
+    if (state.retainedJobs.length > 0 && state.info.url !== state.lastCompletedUrl) {
+      void discardRetainedJobs();
+    }
+
     stopPolling();
     state.jobId = null;
     clearError();
@@ -839,6 +848,8 @@
       finishError("Сервер не вернул сведения о готовом файле.");
       return;
     }
+    const completedJobId = state.jobId;
+    const completedUrl = state.info ? state.info.url : null;
     state.jobId = null;
     state.downloading = false;
     stopPolling();
@@ -852,6 +863,14 @@
     els.saveLink.href = file.url;
     els.saveLink.download = file.name || "";
     els.readyPanel.hidden = false;
+    if (completedJobId && completedUrl) {
+      state.retainedJobs = state.retainedJobs.filter((item) => item.id !== completedJobId);
+      state.retainedJobs.push({ id: completedJobId, url: completedUrl });
+      if (state.retainedJobs.length > 20) {
+        state.retainedJobs.shift();
+      }
+      state.lastCompletedUrl = completedUrl;
+    }
     updateControls();
     updateModeSummary();
     els.saveLink.focus({ preventScroll: true });
@@ -882,6 +901,45 @@
     els.readyName.removeAttribute("title");
     els.saveLink.removeAttribute("href");
     els.saveLink.removeAttribute("download");
+  }
+
+  async function discardRetainedJobs() {
+    const jobs = state.retainedJobs;
+    state.retainedJobs = [];
+    await Promise.all(
+      jobs.map(async (job) => {
+        try {
+          await api("/api/jobs/delete", {
+            method: "POST",
+            body: { job_id: job.id },
+          });
+        } catch {
+          // Если удалить не удалось, файл всё равно очистится по TTL.
+        }
+      })
+    );
+  }
+
+  function discardOnExit() {
+    if (!state.csrf) {
+      return;
+    }
+    const ids = new Set(state.retainedJobs.map((job) => job.id));
+    if (state.jobId) {
+      ids.add(state.jobId);
+    }
+    for (const jobId of ids) {
+      fetch("/api/jobs/delete", {
+        method: "POST",
+        keepalive: true,
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": state.csrf,
+        },
+        body: JSON.stringify({ job_id: jobId }),
+      }).catch(() => {});
+    }
   }
 
   function resetResult() {
