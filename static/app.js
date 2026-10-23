@@ -76,6 +76,17 @@
     },
   };
 
+  const sourceMeta = {
+    youtube: {
+      placeholder: "https://www.youtube.com/watch?v=...",
+      hint: "Поддерживаются youtube.com, youtu.be и music.youtube.com.",
+    },
+    instagram: {
+      placeholder: "https://www.instagram.com/reel/...",
+      hint: "Поддерживаются ссылки на публикации Instagram: /p/, /reel/, /reels/ и /tv/.",
+    },
+  };
+
   let languageNames = null;
   try {
     languageNames = new Intl.DisplayNames(["ru"], { type: "language" });
@@ -83,9 +94,16 @@
     languageNames = null;
   }
 
+  // Return whether a request is currently in progress.
+  function isBusy() {
+    return state.analyzing || state.downloading;
+  }
+
+  // Initialize the interface and load the session.
   function init() {
     bindEvents();
     updateSourceUi();
+    updateModeSummary();
     els.analyze.disabled = true;
     ensureSession()
       .then(() => {
@@ -99,6 +117,7 @@
       });
   }
 
+  // Attach all interface event listeners.
   function bindEvents() {
     els.form.addEventListener("submit", handleAnalyze);
     els.sourceSwitch.addEventListener("click", handleSourceChange);
@@ -120,6 +139,7 @@
     });
   }
 
+  // Update the source buttons, placeholder, and hint.
   function updateSourceUi() {
     const buttons = els.sourceSwitch.querySelectorAll("[data-source]");
     for (const button of buttons) {
@@ -127,20 +147,15 @@
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
     }
-    if (state.source === "instagram") {
-      els.url.placeholder = "https://www.instagram.com/reel/...";
-      els.urlHint.textContent =
-        "Поддерживаются ссылки на публикации Instagram: /p/, /reel/ и /tv/.";
-    } else {
-      els.url.placeholder = "https://www.youtube.com/watch?v=...";
-      els.urlHint.textContent =
-        "Поддерживаются youtube.com, youtu.be и music.youtube.com.";
-    }
+    const meta = sourceMeta[state.source];
+    els.url.placeholder = meta.placeholder;
+    els.urlHint.textContent = meta.hint;
   }
 
+  // Switch between YouTube and Instagram.
   function handleSourceChange(event) {
     const button = event.target.closest("[data-source]");
-    if (!button || button.disabled || state.analyzing || state.downloading) {
+    if (!button || button.disabled || isBusy()) {
       return;
     }
     const source = button.dataset.source;
@@ -148,15 +163,14 @@
       return;
     }
     state.source = source;
-    if (els.url.value.trim() && !looksLikeSourceUrl(els.url.value, source)) {
-      els.url.value = "";
-    }
+    els.url.value = "";
     resetResult();
     clearError();
     updateSourceUi();
     els.url.focus();
   }
 
+  // Fetch and reuse the CSRF token for API calls.
   async function ensureSession() {
     if (state.csrf) {
       return;
@@ -194,6 +208,7 @@
     }
   }
 
+  // Call a local JSON API endpoint and normalize errors.
   async function api(path, options = {}) {
     const method = options.method || "GET";
     const headers = { Accept: "application/json" };
@@ -249,6 +264,7 @@
     return data;
   }
 
+  // Convert an internal error into a user-facing message.
   function humanError(error) {
     if (!error) {
       return "Неизвестная ошибка. Попробуйте ещё раз.";
@@ -265,8 +281,9 @@
     return "Не удалось выполнить действие. Попробуйте ещё раз.";
   }
 
+  // Reset stale results when the URL changes.
   function handleUrlInput() {
-    if (state.analyzing || state.downloading) {
+    if (isBusy()) {
       return;
     }
     if (state.info && els.url.value.trim() !== state.info.url) {
@@ -275,6 +292,7 @@
     clearError();
   }
 
+  // Paste a URL from the clipboard when permitted.
   async function pasteFromClipboard() {
     if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
       els.url.focus();
@@ -297,9 +315,10 @@
     }
   }
 
+  // Fetch media metadata for the selected source.
   async function handleAnalyze(event) {
     event.preventDefault();
-    if (state.analyzing || state.downloading) {
+    if (isBusy()) {
       return;
     }
 
@@ -309,12 +328,8 @@
       els.url.focus();
       return;
     }
-    if (!looksLikeSourceUrl(rawUrl, state.source)) {
-      showError(
-        state.source === "instagram"
-          ? "Похоже, это не ссылка на публикацию Instagram."
-          : "Похоже, это не ссылка на YouTube."
-      );
+    if (!isHttpUrl(rawUrl)) {
+      showError("Похоже, это не ссылка.");
       els.url.focus();
       return;
     }
@@ -328,7 +343,6 @@
     updateControls();
 
     try {
-      await ensureSession();
       const info = await api("/api/info", {
         method: "POST",
         body: { url: rawUrl, source: state.source },
@@ -362,42 +376,34 @@
     }
   }
 
-  function looksLikeSourceUrl(value, source) {
-    let parsed;
+  // Check that a value is a valid HTTP(S) URL.
+  function isHttpUrl(value) {
     try {
-      parsed = new URL(value);
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
     } catch {
       return false;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return false;
-    }
-    const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
-    if (source === "instagram") {
-      return (
-        ["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host) &&
-        /^\/(p|reel|reels|tv)\/[A-Za-z0-9_-]{5,30}\/?$/.test(parsed.pathname)
-      );
-    }
-    return [
-      "youtube.com",
-      "www.youtube.com",
-      "m.youtube.com",
-      "music.youtube.com",
-      "youtube-nocookie.com",
-      "www.youtube-nocookie.com",
-      "youtu.be",
-      "www.youtu.be",
-    ].includes(host);
   }
 
+  // Render metadata and reset the download controls.
   function renderInfo(info) {
-    els.title.textContent =
-      info.title || (info.source === "instagram" ? "Видео Instagram" : "Видео YouTube");
-    els.channel.textContent =
-      info.channel || (info.source === "instagram" ? "Instagram" : "YouTube");
-    renderThumbnail(info);
-    renderChannelAvatar(info);
+    els.title.textContent = info.title || "";
+    els.channel.textContent = info.channel || "";
+    setImage(
+      els.thumbnail,
+      els.thumbnailFallback,
+      info.thumbnail_url,
+      info.thumbnail_url ? `Превью: ${info.title || "видео"}` : ""
+    );
+    setImage(
+      els.channelAvatar,
+      els.channelAvatarFallback,
+      info.channel_avatar_url,
+      info.channel_avatar_url && info.channel
+        ? `Логотип канала ${info.channel}`
+        : "Логотип канала"
+    );
 
     if (Number.isFinite(info.duration) && info.duration > 0) {
       const duration = formatDuration(info.duration);
@@ -432,68 +438,35 @@
     updateControls();
   }
 
-  function renderThumbnail(info) {
-    els.thumbnail.onload = () => {
-      els.thumbnail.hidden = false;
-      els.thumbnailFallback.hidden = true;
-    };
-    els.thumbnail.onerror = () => {
-      els.thumbnail.hidden = true;
-      els.thumbnailFallback.hidden = false;
-    };
-    els.thumbnailFallback.hidden = false;
-    if (info.thumbnail_url) {
-      els.thumbnail.alt = `Превью: ${info.title || "видео"}`;
-      els.thumbnail.hidden = true;
-      els.thumbnail.src = info.thumbnail_url;
+  // Load an image and show its fallback on failure.
+  function setImage(image, fallback, url, alt) {
+    if (url) {
+      image.onload = () => {
+        image.hidden = false;
+        fallback.hidden = true;
+      };
+      image.onerror = () => {
+        image.hidden = true;
+        fallback.hidden = false;
+      };
+      image.alt = alt;
+      image.src = url;
     } else {
-      els.thumbnail.removeAttribute("src");
-      els.thumbnail.alt = "";
-      els.thumbnail.hidden = true;
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute("src");
+      image.alt = "";
     }
+    image.hidden = true;
+    fallback.hidden = false;
   }
 
-  function clearThumbnail() {
-    els.thumbnail.onload = null;
-    els.thumbnail.onerror = null;
-    els.thumbnail.removeAttribute("src");
-    els.thumbnail.alt = "";
-    els.thumbnail.hidden = true;
-    els.thumbnailFallback.hidden = false;
+  // Reset an image and show its fallback.
+  function clearImage(image, fallback) {
+    setImage(image, fallback, null, "");
   }
 
-  function renderChannelAvatar(info) {
-    els.channelAvatar.onload = () => {
-      els.channelAvatar.hidden = false;
-      els.channelAvatarFallback.hidden = true;
-    };
-    els.channelAvatar.onerror = () => {
-      els.channelAvatar.hidden = true;
-      els.channelAvatarFallback.hidden = false;
-    };
-    els.channelAvatarFallback.hidden = false;
-    if (info.channel_avatar_url) {
-      els.channelAvatar.alt = info.channel
-        ? `Логотип канала ${info.channel}`
-        : "Логотип канала";
-      els.channelAvatar.hidden = true;
-      els.channelAvatar.src = info.channel_avatar_url;
-    } else {
-      els.channelAvatar.removeAttribute("src");
-      els.channelAvatar.alt = "";
-      els.channelAvatar.hidden = true;
-    }
-  }
-
-  function clearChannelAvatar() {
-    els.channelAvatar.onload = null;
-    els.channelAvatar.onerror = null;
-    els.channelAvatar.removeAttribute("src");
-    els.channelAvatar.alt = "";
-    els.channelAvatar.hidden = true;
-    els.channelAvatarFallback.hidden = false;
-  }
-
+  // Populate the quality selector and choose a default.
   function fillQualityOptions(qualities) {
     els.quality.replaceChildren();
     for (const quality of qualities) {
@@ -512,6 +485,7 @@
     els.quality.value = String(preferred.height);
   }
 
+  // Build a readable label for a quality option.
   function qualityOptionLabel(quality) {
     const parts = [];
     if (quality.height >= 2160) {
@@ -540,6 +514,7 @@
     return label;
   }
 
+  // Populate subtitle languages and choose a default.
   function fillSubtitleOptions(subtitles) {
     els.subtitle.replaceChildren();
     const manual = subtitles.filter((item) => !item.auto);
@@ -576,6 +551,7 @@
     els.subtitle.value = preferred.code;
   }
 
+  // Create one subtitle option element.
   function subtitleOption(subtitle) {
     const option = document.createElement("option");
     option.value = subtitle.code;
@@ -584,6 +560,7 @@
     return option;
   }
 
+  // Explain subtitle availability and accuracy.
   function updateSubtitleHint(subtitles) {
     const automaticCount = subtitles.filter((item) => item.auto).length;
     if (subtitles.length === 0) {
@@ -598,6 +575,7 @@
     }
   }
 
+  // Return a localized language name for a code.
   function languageLabel(code) {
     const fallback = code;
     if (!languageNames) {
@@ -627,22 +605,26 @@
     return name.charAt(0).toLocaleUpperCase("ru-RU") + name.slice(1);
   }
 
+  // Return which download modes are available.
   function availableModes() {
+    const info = state.info;
     return {
-      video: Boolean(state.info && state.info.qualities.length > 0),
-      audio: Boolean(state.info && state.info.has_audio),
-      subtitles: Boolean(state.info && state.info.subtitles.length > 0),
+      video: Boolean(info && info.qualities.length > 0),
+      audio: Boolean(info && info.has_audio),
+      subtitles: Boolean(info && info.subtitles.length > 0),
     };
   }
 
+  // Select a download mode from a tab click.
   function handleTabClick(event) {
     const tab = event.target.closest("[data-mode]");
-    if (!tab || tab.disabled || state.analyzing || state.downloading) {
+    if (!tab || tab.disabled || isBusy()) {
       return;
     }
     selectMode(tab.dataset.mode, false);
   }
 
+  // Move between mode tabs with the keyboard.
   function handleTabKeydown(event) {
     const tabs = Array.from(els.tabs.querySelectorAll("[data-mode]:not(:disabled)"));
     if (tabs.length === 0) {
@@ -670,6 +652,7 @@
     selectMode(next.dataset.mode, true);
   }
 
+  // Activate one download mode and refresh its panel.
   function selectMode(mode, focus) {
     const modes = availableModes();
     if (!modes[mode]) {
@@ -697,6 +680,7 @@
     updateControls();
   }
 
+  // Update the file note and download button label.
   function updateModeSummary() {
     const modes = availableModes();
     if (!state.info || !modes[state.mode]) {
@@ -728,6 +712,7 @@
       : modeMeta[state.mode].label;
   }
 
+  // Return the currently selected quality object.
   function getSelectedQuality() {
     if (!state.info) {
       return null;
@@ -736,12 +721,13 @@
     return state.info.qualities.find((item) => item.height === height) || null;
   }
 
+  // Enable or disable controls for the current state.
   function updateControls() {
-    const busy = state.analyzing || state.downloading;
+    const busy = isBusy();
     const modes = availableModes();
 
     els.url.disabled = busy;
-    els.paste.disabled = state.analyzing;
+    els.paste.disabled = busy;
     els.sourceSwitch.querySelectorAll("[data-source]").forEach((button) => {
       button.disabled = busy;
     });
@@ -760,14 +746,12 @@
     els.subtitle.disabled = busy || !modes.subtitles;
     els.download.disabled = busy || !hasInfo;
     els.download.classList.toggle("is-loading", state.downloading);
-    if (!state.downloading) {
-      els.downloadLabel.textContent = modeMeta[state.mode].label;
-    }
     els.result.setAttribute("aria-busy", busy ? "true" : "false");
   }
 
+  // Create a download job and start polling it.
   async function startDownload() {
-    if (state.analyzing || state.downloading || !state.info) {
+    if (isBusy() || !state.info) {
       return;
     }
     const modes = availableModes();
@@ -827,15 +811,18 @@
       state.downloading = false;
       els.progressPanel.hidden = true;
       updateControls();
+      updateModeSummary();
       showError(humanError(error));
     }
   }
 
+  // Schedule the next job status request.
   function schedulePoll() {
     window.clearTimeout(state.jobTimer);
     state.jobTimer = window.setTimeout(pollJob, 850);
   }
 
+  // Read job progress and finish when it is ready.
   async function pollJob() {
     const jobId = state.jobId;
     if (!jobId) {
@@ -872,6 +859,7 @@
     }
   }
 
+  // Render the current job progress and transfer details.
   function updateProgress(job) {
     els.progressPanel.hidden = false;
     const percent = clampPercent(job.progress);
@@ -901,6 +889,7 @@
     els.progressSpeed.textContent = speedParts.join(" · ");
   }
 
+  // Show the completed file and remember its job.
   function finishReady(job) {
     if (!job.file || !job.file.url) {
       finishError("Сервер не вернул сведения о готовом файле.");
@@ -934,6 +923,7 @@
     els.saveLink.focus({ preventScroll: true });
   }
 
+  // Stop polling and show a download error.
   function finishError(message) {
     state.jobId = null;
     state.downloading = false;
@@ -944,6 +934,7 @@
     showError(message || "Не удалось скачать файл.");
   }
 
+  // Reset the progress panel to its initial state.
   function resetProgress() {
     els.progressBar.value = 0;
     els.progressBar.setAttribute("aria-valuenow", "0");
@@ -953,6 +944,7 @@
     els.progressSpeed.textContent = "";
   }
 
+  // Hide the completed-file panel and clear its link.
   function hideReady() {
     els.readyPanel.hidden = true;
     els.readyName.textContent = "";
@@ -961,6 +953,7 @@
     els.saveLink.removeAttribute("download");
   }
 
+  // Delete completed jobs after a source change.
   async function discardRetainedJobs() {
     const jobs = state.retainedJobs;
     state.retainedJobs = [];
@@ -972,12 +965,13 @@
             body: { job_id: job.id },
           });
         } catch {
-          // Если удалить не удалось, файл всё равно очистится по TTL.
+          // A failed cleanup is still covered by the server-side TTL.
         }
       })
     );
   }
 
+  // Request best-effort cleanup when the page unloads.
   function discardOnExit() {
     if (!state.csrf) {
       return;
@@ -1000,6 +994,7 @@
     }
   }
 
+  // Clear the current media result and controls.
   function resetResult() {
     stopPolling();
     state.info = null;
@@ -1015,8 +1010,8 @@
     els.duration.removeAttribute("aria-label");
     els.title.textContent = "";
     els.channel.textContent = "";
-    clearThumbnail();
-    clearChannelAvatar();
+    clearImage(els.thumbnail, els.thumbnailFallback);
+    clearImage(els.channelAvatar, els.channelAvatarFallback);
     hideReady();
     els.progressPanel.hidden = true;
     resetProgress();
@@ -1024,11 +1019,13 @@
     updateModeSummary();
   }
 
+  // Cancel the pending status poll.
   function stopPolling() {
     window.clearTimeout(state.jobTimer);
     state.jobTimer = null;
   }
 
+  // Display an error message to the user.
   function showError(message, scroll = true) {
     if (!message) {
       return;
@@ -1043,11 +1040,13 @@
     }
   }
 
+  // Hide the current error message.
   function clearError() {
     els.error.hidden = true;
     els.errorText.textContent = "";
   }
 
+  // Format a byte count with Russian units.
   function formatBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) {
       return "0 Б";
@@ -1063,6 +1062,7 @@
     return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits }).format(value)} ${units[index]}`;
   }
 
+  // Format seconds as minutes or hours.
   function formatDuration(totalSeconds) {
     if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
       return "";
@@ -1077,6 +1077,7 @@
     return `${minutes}:${String(rest).padStart(2, "0")}`;
   }
 
+  // Choose the Russian plural form for a count.
   function plural(count, one, few, many) {
     const mod10 = count % 10;
     const mod100 = count % 100;
@@ -1089,6 +1090,7 @@
     return many;
   }
 
+  // Clamp a value to the 0-100 percent range.
   function clampPercent(value) {
     if (!Number.isFinite(value)) {
       return 0;
@@ -1096,6 +1098,7 @@
     return Math.min(100, Math.max(0, value));
   }
 
+  // Return whether reduced motion is requested.
   function prefersReducedMotion() {
     return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }

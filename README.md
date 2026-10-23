@@ -1,195 +1,89 @@
 # YouTube & Instagram Downloader
 
-Локальное веб-приложение для скачивания видео с YouTube и Instagram: MP4, MP3 и субтитры в TXT.
-Сервер работает только на `127.0.0.1` и не открывает доступ из локальной сети или интернета.
+A small local web application for downloading public YouTube and Instagram
+media. The server listens only on `127.0.0.1`, so it is not accessible from other
+computers or from the internet. Media is processed on your own PC, and the
+application never asks for account credentials or browser cookies.
 
-## Возможности
+## What it supports
 
-- выбор источника кнопками **YouTube** или **Instagram**;
-- ссылки YouTube: `youtube.com`, `youtu.be`, `m.youtube.com`, `music.youtube.com`;
-- ссылки Instagram на публикации и Reels: `/p/`, `/reel/`, `/tv/`;
-- карточка видео с превью, названием, каналом, логотипом канала и длительностью;
-- доступные разрешения видео с оценкой размера;
-- видео сохраняется в **MP4** (видео и звук объединяются через ffmpeg);
-- режим «Только звук» сохраняет **MP3** с битрейтом 192 кбит/с;
-- субтитры YouTube — оригинальные и автоматические — сохраняются как **TXT** без таймкодов;
-- прогресс скачивания, скорость и оставшееся время;
-- тёмный минималистичный интерфейс в синих и фиолетовых тонах, без внешних шрифтов и CDN.
+- YouTube videos, Shorts, and music links.
+- Public Instagram posts, Reels, and IGTV videos.
+- Video output as MP4, audio output as MP3, and YouTube subtitles as plain text.
+- One video or post per link. Playlists, live streams, private content,
+  age-restricted content, and content that requires a login are not supported.
 
-## Быстрый запуск на Windows
+## How to use
 
-1. Установите Python 3.10 или новее (при установке отметьте **Add Python to PATH**).
-2. Дважды щёлкните `start.bat`.
-3. Откроется браузер с адресом <http://127.0.0.1:8765>.
+### Requirements
 
-`start.bat` сам создаст `.venv`, установит `yt-dlp` и `imageio-ffmpeg`, затем запустит сервер.
-Отдельно устанавливать ffmpeg не нужно: он поставляется внутри `imageio-ffmpeg`.
+- Windows 10 or newer.
+- Python 3.10 or newer, installed with **Add Python to PATH** enabled.
+- An internet connection and a modern browser.
 
-Окно консоли — это и есть запущенный сервер: `start.bat` запускает Python в текущем
-окне, а не отдельным фоновым процессом. Пока окно открыто — сервер работает.
-Закрытие окна или `Ctrl+C` останавливает сервер; после этого фоновых процессов
-приложения не остаётся. Не закрывайте консоль, пока пользуетесь интерфейсом.
+FFmpeg is installed together with the Python dependencies, so no separate
+system installation is needed.
 
-### Ручной запуск
+### Start the application
 
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe app.py --open
-```
+1. Double-click `start.bat`.
+2. On the first launch, the script creates a local environment and installs the
+   dependencies. This can take a few minutes.
+3. The interface opens in your browser at `http://127.0.0.1:8765`. If it does
+   not open automatically, open that address manually.
+4. Keep the console window open while the application is running.
 
-Без автоматического открытия браузера:
+To stop the application, press `Ctrl+C` in the console or close the console
+window. If port `8765` is already in use, start the app from the project folder
+with:
 
 ```powershell
-.\.venv\Scripts\python.exe app.py
+.venv\Scripts\python.exe app.py --port 8766 --open
 ```
 
-## Как пользоваться
+### Download a file
 
-1. Выберите источник кнопкой **YouTube** или **Instagram**.
-2. Вставьте ссылку на видео и нажмите **«Получить варианты»**.
-3. Выберите вкладку:
-   - **Видео** — качество из списка доступных;
-   - **Только звук** — MP3 192 кбит/с;
-   - **Субтитры** — язык из списка оригинальных или автоматических субтитров (только YouTube).
-4. Нажмите кнопку скачивания. После завершения в карточке появится кнопка
-   **«Скачать файл»** — браузер сохранит его в свою папку загрузок.
+1. Select **YouTube** or **Instagram**.
+2. Paste a link to a single video or post.
+3. Click **Получить варианты**.
+4. Choose what to download:
+   - a video quality;
+   - audio only (MP3);
+   - subtitles (YouTube only).
+5. Click the download button and wait for processing to finish.
+6. Click **Скачать файл**. The browser saves the file to its normal downloads
+   folder.
 
-Временная копия файла хранится в `.runtime`. Она удаляется, когда пользователь
-обновляет или закрывает страницу либо запускает скачивание по другой ссылке.
-Если этого не произошло, копия удаляется по таймеру или при завершении работы
-приложения. Файл в папке загрузок браузера остаётся у пользователя.
+Temporary server-side copies are removed when the page is reloaded or closed,
+when a download for a different link is started, or automatically after
+30 minutes.
 
-## Настройки
+## Permitted use
 
-Параметры можно передать аргументами или переменными окружения.
+You may use this application only for material that:
 
-| Аргумент | Переменная | По умолчанию | Назначение |
-|---|---|---:|---|
-| `--port` | `VD_PORT` | `8765` | локальный порт |
-| `--max-file-mb` | `VD_MAX_FILE_MB` | `4096` | максимум на один файл, МБ |
-| `--job-ttl-min` | `VD_JOB_TTL_MIN` | `30` | резервный срок хранения временных файлов |
-| `--max-active` | `VD_MAX_ACTIVE` | `2` | одновременных загрузок, 1–4 |
-| — | `VD_FFMPEG` | встроенный | путь к другому исполняемому файлу ffmpeg |
+- you own;
+- is in the public domain;
+- is licensed for downloading; or
+- you have explicit permission from the rights holder to download.
 
-Примеры:
+Your use must also comply with the law in your country and with the terms of the
+source platform. Personal use does not automatically make a download legal.
 
-```powershell
-.\.venv\Scripts\python.exe app.py --port 8766 --max-file-mb 2048 --open
-$env:VD_JOB_TTL_MIN = "60"; .\.venv\Scripts\python.exe app.py
-```
+## Prohibited use
 
-Сервер всегда слушает только `127.0.0.1`; изменить адрес привязки через настройки нельзя.
+Do not use this application to:
 
-## Безопасность
+- download copyrighted material without permission;
+- bypass DRM, paywalls, login restrictions, or other access controls;
+- download private, confidential, or personal content without consent;
+- redistribute, sell, or publicly share downloaded content without the required
+  rights;
+- violate YouTube, Instagram, or any other applicable terms of service;
+- harass, stalk, or infringe the privacy of any person.
 
-Приложение рассчитано на локальный однопользовательский ПК и применяет защиту на нескольких уровнях.
-
-**Сеть и браузер**
-
-- HTTP-сервер слушает только loopback-интерфейс `127.0.0.1`.
-- Проверяется заголовок `Host` (защита от DNS rebinding): принимаются только
-  `127.0.0.1:<порт>` и `localhost:<порт>`.
-- Все изменяющие запросы требуют одновременно:
-  - точный `Origin` текущего сервера;
-  - CSRF-токен в `X-CSRF-Token`;
-  - `Content-Type: application/json`;
-  - ограниченный размер тела (32 КБ).
-- CORS-заголовки не выдаются; межсайтовые запросы отклоняются.
-- Строгий CSP (`default-src 'none'; script-src 'self' ...`), запрет встраивания во фрейм,
-  `nosniff`, `no-referrer`, ограничение Permissions Policy. В интерфейсе нет внешних
-  ресурсов, inline-скриптов и inline-стилей.
-- Есть ограничение частоты запросов и одновременно выполняемых загрузок.
-
-**Ссылки и загрузчик**
-
-- Принимаются только ссылки YouTube и Instagram на конкретную публикацию.
-  Хосты проверяются по allowlist, ссылки нормализуются до канонического вида,
-  а идентификаторы обязаны соответствовать строгим шаблонам.
-- Плейлисты, каналы, профили, произвольные хосты, порты, учётные данные в URL
-  и не-HTTP-схемы отклоняются. Это исключает SSRF и загрузку с произвольных адресов.
-- Пользователь не может передать свои аргументы `yt-dlp`, формат-строку, путь сохранения
-  или имя файла. Качество — только проверенное целое число из списка, язык субтитров —
-  только код, прошедший регулярную проверку.
-- `yt-dlp` вызывается через Python API, без `shell=True` и без пользовательских
-  postprocessor/exec-хуков. Конфигурационные файлы `yt-dlp` игнорируются.
-- Пути и имена файлов формируются сервером, имя очищается от управляющих символов,
-  разделителей путей и зарезервированных имён Windows.
-- Готовый файл отдаётся только по случайному ID задания и только из каталога этого
-  задания; произвольные файлы через API не отдаются. Имя передаётся браузеру через
-  `Content-Disposition`.
-- Превью загружается сервером только с фиксированного хоста `i.ytimg.com` по
-  проверенному 11-символьному ID. Логотип канала загружается только с
-  `yt3.googleusercontent.com`/`yt3.ggpht.com` по проверенному ID канала.
-  Браузер не обращается к внешним CDN.
-- Лимит размера файла, проверка свободного места на диске, ограничение числа
-  одновременных загрузок и очистка временных каталогов защищают диск от переполнения.
-- Журнал не содержит CSRF-токены и тела запросов; наружу не отдаются трассировки
-  исключений и внутренние пути.
-
-**Что приложение намеренно не делает**
-
-- не читает cookies браузера и не просит входить в аккаунт;
-- не обходит DRM, возрастные ограничения, приватность видео и закрытые аккаунты;
-- не открывает порт в локальной сети;
-- не отправляет телеметрию, аналитику или какие-либо данные третьим сторонам,
-  кроме запросов к YouTube, Instagram, `i.ytimg.com` и `yt3.googleusercontent.com`
-  (или `yt3.ggpht.com`), необходимых для загрузки, превью и логотипа канала.
-
-## Ограничения
-
-- Приватные, платные, возрастные видео и видео, требующие входа, не поддерживаются.
-- Закрытые и приватные публикации Instagram недоступны без входа в аккаунт.
-- Instagram не предоставляет субтитры для скачивания.
-- Прямые трансляции, премьеры, карусели и плейлисты не поддерживаются.
-- YouTube и Instagram периодически меняют защиту. Если скачивание перестало работать, обновите `yt-dlp`:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -U yt-dlp
-```
-
-- YouTube и Instagram могут временно ограничивать частоту запросов (HTTP 429). В этом
-  случае подождите несколько минут.
-- Автоматические субтитры распознаются алгоритмом YouTube и могут содержать ошибки.
-- Скорость и доступные качества зависят от самого видео и соединения.
-
-## Проверка
-
-Тесты не обращаются к YouTube или Instagram: проверяются валидация ссылок, файловые
-имена, разбор субтитров, сбор метаданных, CSRF/Origin/Host-защита, заголовки
-безопасности, отдача статики и готовых файлов, отсутствие утечки файлов проекта.
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-Ручная проверка полного цикла на реальном видео:
-
-```powershell
-.\.venv\Scripts\python.exe app.py --port 8765
-```
-
-Затем откройте <http://127.0.0.1:8765> и скачайте видео, MP3 и субтитры.
-
-## Структура проекта
-
-```text
-app.py                 HTTP-сервер, API, задания, защита
-downloader.py          загрузка YouTube/Instagram: валидация URL, yt-dlp, ffmpeg
-static/
-  index.html           интерфейс
-  styles.css           оформление
-  app.js               клиентская логика и опрос прогресса
-tests/
-  test_downloader.py   тесты валидации и подготовки данных
-  test_server.py       тесты HTTP- и security-поведения
-requirements.txt       зависимости приложения
-start.bat              запуск в один клик для Windows
-.runtime/              временные файлы заданий (создаётся при запуске)
-```
-
-## Правовая заметка
-
-Скачивайте только те материалы, на которые у вас есть права или которые разрешены
-условиями использования и законодательством. Ответственность за использование
-приложения лежит на пользователе.
+The application does not grant any rights to third-party content and must not be
+exposed to a network. You are solely responsible for how you use it. This notice
+is not legal advice, and a download can still violate copyright law or platform
+terms even when the application is technically able to perform it. If you are
+unsure whether a download is allowed, do not download it.

@@ -1,4 +1,4 @@
-# Минимальные зависимости. ffmpeg поставляется внутри imageio-ffmpeg,
-# поэтому отдельная установка ffmpeg в систему не требуется.
+# Minimal dependencies. ffmpeg is bundled with imageio-ffmpeg, so a separate
+# system installation of ffmpeg is not required.
 yt-dlp>=2026.10.21
 imageio-ffmpeg>=0.6.0,<0.7

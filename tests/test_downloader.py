@@ -1,3 +1,5 @@
+"""Tests for the local downloader application."""
+
 from __future__ import annotations
 
 import shutil
@@ -14,7 +16,9 @@ from downloader import DownloadError  # noqa: E402
 
 
 class UrlValidationTests(unittest.TestCase):
+    """Validation and normalization of YouTube links."""
     def test_accepts_and_canonicalizes_youtube_urls(self) -> None:
+        """Verify accepts and canonicalizes youtube urls."""
         video_id = "dQw4w9WgXcQ"
         cases = [
             f"https://www.youtube.com/watch?v={video_id}",
@@ -34,6 +38,7 @@ class UrlValidationTests(unittest.TestCase):
                 self.assertEqual(downloader.normalize_youtube_url(value), expected)
 
     def test_rejects_unsafe_or_non_video_urls(self) -> None:
+        """Verify rejects unsafe or non video urls."""
         video_id = "dQw4w9WgXcQ"
         cases = [
             None,
@@ -62,12 +67,15 @@ class UrlValidationTests(unittest.TestCase):
                 self.assertEqual(context.exception.http_status, 400)
 
     def test_rejects_overlong_url(self) -> None:
+        """Verify rejects overlong url."""
         with self.assertRaises(DownloadError):
             downloader.normalize_youtube_url("https://youtu.be/" + "a" * 3000)
 
 
 class InstagramUrlValidationTests(unittest.TestCase):
+    """Validation and normalization of Instagram links."""
     def test_accepts_and_canonicalizes_instagram_urls(self) -> None:
+        """Verify accepts and canonicalizes instagram urls."""
         cases = {
             "https://www.instagram.com/p/BQ0eAlwhDrw/": (
                 "https://www.instagram.com/p/BQ0eAlwhDrw/"
@@ -87,6 +95,7 @@ class InstagramUrlValidationTests(unittest.TestCase):
                 self.assertEqual(downloader.normalize_instagram_url(value), expected)
 
     def test_rejects_unsafe_or_non_post_urls(self) -> None:
+        """Verify rejects unsafe or non post urls."""
         cases = [
             None,
             "",
@@ -106,6 +115,7 @@ class InstagramUrlValidationTests(unittest.TestCase):
                     downloader.normalize_instagram_url(value)
 
     def test_media_normalizer_dispatches_by_source(self) -> None:
+        """Verify media normalizer dispatches by source."""
         self.assertEqual(
             downloader.normalize_media_url("https://youtu.be/dQw4w9WgXcQ", "youtube"),
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -122,7 +132,9 @@ class InstagramUrlValidationTests(unittest.TestCase):
 
 
 class FilenameTests(unittest.TestCase):
+    """Safe filename generation."""
     def test_removes_path_separators_and_controls(self) -> None:
+        """Verify removes path separators and controls."""
         value = downloader.sanitize_filename("../../evil\x00name.mp4")
         self.assertNotIn("/", value)
         self.assertNotIn("\\", value)
@@ -130,24 +142,35 @@ class FilenameTests(unittest.TestCase):
         self.assertNotIn("..", value)
 
     def test_handles_windows_reserved_names(self) -> None:
+        """Verify handles windows reserved names."""
         for name in ("CON", "con.txt", "COM1", "LPT9"):
             with self.subTest(name=name):
                 self.assertTrue(downloader.sanitize_filename(name).startswith("_"))
 
     def test_limits_length_and_has_fallback(self) -> None:
+        """Verify limits length and has fallback."""
         value = downloader.sanitize_filename("x" * 500)
         self.assertLessEqual(len(value), 160)
         self.assertEqual(downloader.sanitize_filename(None), "youtube-video")
         self.assertEqual(downloader.sanitize_filename("..."), "youtube-video")
 
     def test_keeps_unicode_title(self) -> None:
+        """Verify keeps unicode title."""
         value = downloader.sanitize_filename("Лекция — день 1.mp4")
         self.assertIn("Лекция", value)
         self.assertTrue(value.endswith(".mp4"))
 
+    def test_display_filename_keeps_extension(self) -> None:
+        """Verify long titles are shortened without losing the extension."""
+        value = downloader._display_filename("x" * 500, "dQw4w9WgXcQ", "1080p", "mp4")
+        self.assertTrue(value.endswith(".mp4"))
+        self.assertLessEqual(len(value), 170)
+
 
 class SubtitleConversionTests(unittest.TestCase):
+    """Subtitle conversion and output handling."""
     def test_vtt_becomes_plain_text(self) -> None:
+        """Verify vtt becomes plain text."""
         content = """WEBVTT
 Kind: captions
 Language: en
@@ -168,6 +191,7 @@ with <i>markup</i>
         )
 
     def test_srt_is_supported(self) -> None:
+        """Verify srt is supported."""
         content = """1
 00:00:01,000 --> 00:00:02,000
 Первая строка
@@ -182,6 +206,7 @@ with <i>markup</i>
         )
 
     def test_ignores_notes_and_inline_timestamps(self) -> None:
+        """Verify ignores notes and inline timestamps."""
         content = """WEBVTT
 
 NOTE this is a comment
@@ -192,10 +217,12 @@ NOTE this is a comment
         self.assertEqual(downloader.vtt_to_text(content), "Hello world")
 
     def test_empty_input(self) -> None:
+        """Verify empty input."""
         self.assertEqual(downloader.vtt_to_text(""), "")
         self.assertEqual(downloader.vtt_to_text("WEBVTT\n\n"), "")
 
     def test_conversion_writes_txt_and_removes_vtt(self) -> None:
+        """Verify conversion writes txt and removes vtt."""
         workdir = ROOT / ".test-subtitles"
         shutil.rmtree(workdir, ignore_errors=True)
         workdir.mkdir()
@@ -214,7 +241,9 @@ NOTE this is a comment
 
 
 class MetadataCollectionTests(unittest.TestCase):
+    """Metadata extraction and format selection."""
     def test_quality_deduplication_and_sorting(self) -> None:
+        """Verify quality deduplication and sorting."""
         info = {
             "duration": 60,
             "formats": [
@@ -234,6 +263,7 @@ class MetadataCollectionTests(unittest.TestCase):
         self.assertEqual(qualities[1]["codec"], "H.264")
 
     def test_subtitles_manual_wins_over_auto(self) -> None:
+        """Verify subtitles manual wins over auto."""
         info = {
             "subtitles": {"en": [{"ext": "vtt"}], "ru": [{"ext": "vtt"}]},
             "automatic_captions": {"en": [{"ext": "vtt"}], "de": [{"ext": "vtt"}]},
@@ -246,6 +276,7 @@ class MetadataCollectionTests(unittest.TestCase):
         self.assertEqual(len(subtitles), 3)
 
     def test_rejects_invalid_subtitle_codes(self) -> None:
+        """Verify rejects invalid subtitle codes."""
         info = {
             "subtitles": {
                 "../evil": [{"ext": "vtt"}],
@@ -259,22 +290,26 @@ class MetadataCollectionTests(unittest.TestCase):
         )
 
     def test_video_selector_is_numeric_only(self) -> None:
-        selector = downloader._video_format_selector(1080)
+        """Verify video selector is numeric only."""
+        selector = downloader._format_selector("youtube", 1080)
         self.assertIn("height=1080", selector)
         with self.assertRaises(DownloadError):
-            downloader._video_format_selector(9999)
+            downloader._format_selector("youtube", 9999)
         with self.assertRaises(DownloadError):
-            downloader._video_format_selector(-1)
+            downloader._format_selector("youtube", -1)
 
     def test_instagram_selector_is_numeric_only(self) -> None:
-        selector = downloader._instagram_format_selector(1280)
+        """Verify instagram selector is numeric only."""
+        selector = downloader._format_selector("instagram", 1280)
         self.assertIn("height=1280", selector)
         with self.assertRaises(DownloadError):
-            downloader._instagram_format_selector(9999)
+            downloader._format_selector("instagram", 9999)
 
 
 class ChannelAvatarTests(unittest.TestCase):
+    """Channel avatar selection."""
     def test_prefers_square_avatar_over_banner(self) -> None:
+        """Verify prefers square avatar over banner."""
         info = {
             "thumbnails": [
                 {
@@ -295,6 +330,7 @@ class ChannelAvatarTests(unittest.TestCase):
         )
 
     def test_accepts_square_fallback_without_known_id(self) -> None:
+        """Verify accepts square fallback without known id."""
         info = {
             "thumbnails": [
                 {
@@ -310,6 +346,7 @@ class ChannelAvatarTests(unittest.TestCase):
         )
 
     def test_rejects_foreign_avatar_host(self) -> None:
+        """Verify rejects foreign avatar host."""
         info = {
             "thumbnails": [
                 {"id": "avatar_uncropped", "url": "https://evil.example/avatar.png"}
@@ -318,12 +355,49 @@ class ChannelAvatarTests(unittest.TestCase):
         self.assertIsNone(downloader._pick_channel_avatar_url(info))
 
     def test_rejects_invalid_channel_id_without_network(self) -> None:
+        """Verify rejects invalid channel id without network."""
         self.assertIsNone(downloader.fetch_channel_avatar("../UC123"))
         self.assertIsNone(downloader.fetch_channel_avatar("UC123"))
 
 
+class RequestValidationTests(unittest.TestCase):
+    """Shared download request validation."""
+
+    def test_video_request_returns_validated_options(self) -> None:
+        """Verify a video request keeps its height and clears other options."""
+        request = downloader.validate_request("youtube", "video", 1080)
+        self.assertEqual(request.mode, "video")
+        self.assertEqual(request.height, 1080)
+        self.assertIsNone(request.subtitle_lang)
+        self.assertFalse(request.auto_subtitle)
+
+    def test_subtitle_request_keeps_language_and_auto_flag(self) -> None:
+        """Verify a subtitle request keeps its language and automatic flag."""
+        request = downloader.validate_request("youtube", "subtitles", None, "en", True)
+        self.assertEqual(request.mode, "subtitles")
+        self.assertIsNone(request.height)
+        self.assertEqual(request.subtitle_lang, "en")
+        self.assertTrue(request.auto_subtitle)
+
+    def test_invalid_combinations_are_rejected(self) -> None:
+        """Verify unsupported sources, modes, and values are rejected."""
+        cases = [
+            ("instagram", "subtitles", None, "en", False),
+            ("youtube", "unknown", None, None, False),
+            ("youtube", "video", 0, None, False),
+            ("youtube", "subtitles", None, "../etc", False),
+            ("youtube", "subtitles", None, "en", "yes"),
+        ]
+        for values in cases:
+            with self.subTest(values=values):
+                with self.assertRaises(DownloadError):
+                    downloader.validate_request(*values)
+
+
 class DownloadEntryValidationTests(unittest.TestCase):
+    """Early validation in the download entry point."""
     def test_rejects_invalid_mode_before_network(self) -> None:
+        """Verify rejects invalid mode before network."""
         with self.assertRaises(DownloadError) as context:
             downloader.download(
                 "https://youtu.be/dQw4w9WgXcQ",
@@ -333,6 +407,7 @@ class DownloadEntryValidationTests(unittest.TestCase):
         self.assertEqual(context.exception.http_status, 400)
 
     def test_rejects_video_without_quality(self) -> None:
+        """Verify rejects video without quality."""
         with self.assertRaises(DownloadError):
             downloader.download(
                 "https://youtu.be/dQw4w9WgXcQ",
@@ -341,6 +416,7 @@ class DownloadEntryValidationTests(unittest.TestCase):
             )
 
     def test_rejects_unsafe_url_before_creating_directory(self) -> None:
+        """Verify rejects unsafe url before creating directory."""
         output_dir = ROOT / ".test-should-not-exist"
         shutil.rmtree(output_dir, ignore_errors=True)
         with self.assertRaises(DownloadError):

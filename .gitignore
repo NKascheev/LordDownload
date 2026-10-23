@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 
-# Локальные данные приложения и тестов
+# Local application and test data
 .runtime/
 .test-runtime/
 .test-subtitles/

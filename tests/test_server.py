@@ -1,3 +1,5 @@
+"""Tests for the local downloader application."""
+
 from __future__ import annotations
 
 import http.client
@@ -18,10 +20,12 @@ import app  # noqa: E402
 
 
 class ServerSecurityTests(unittest.TestCase):
+    """HTTP routing, validation, and security behavior."""
     runtime: Path
 
     @classmethod
     def setUpClass(cls) -> None:
+        """Create the shared test server."""
         logging.disable(logging.CRITICAL)
         cls.runtime = ROOT / ".test-runtime"
         shutil.rmtree(cls.runtime, ignore_errors=True)
@@ -45,6 +49,7 @@ class ServerSecurityTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
+        """Stop the test server and remove temporary data."""
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=5)
@@ -61,6 +66,7 @@ class ServerSecurityTests(unittest.TestCase):
         headers: dict[str, str] | None = None,
         host: str | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
+        """Send an HTTP request and return status, headers, and body."""
         connection = http.client.HTTPConnection("127.0.0.1", cls.port, timeout=8)
         request_headers = {"Host": host or cls.host}
         if headers:
@@ -76,11 +82,13 @@ class ServerSecurityTests(unittest.TestCase):
 
     @classmethod
     def _bootstrap(cls) -> dict:
+        """Fetch bootstrap data from the test server."""
         status, _, body = cls._request("GET", "/api/bootstrap")
         assert status == 200
         return json.loads(body)
 
     def _json_headers(self) -> dict[str, str]:
+        """Build JSON request headers with CSRF and Origin."""
         return {
             "Content-Type": "application/json",
             "Origin": self.origin,
@@ -94,6 +102,7 @@ class ServerSecurityTests(unittest.TestCase):
         *,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], dict]:
+        """Send a JSON POST request and decode the response."""
         merged = self._json_headers()
         if headers:
             merged.update(headers)
@@ -110,6 +119,7 @@ class ServerSecurityTests(unittest.TestCase):
         return status, response_headers, data
 
     def test_index_has_security_headers(self) -> None:
+        """Verify index has security headers."""
         status, headers, body = self._request("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn("Скачать видео".encode("utf-8"), body)
@@ -124,6 +134,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(headers["cache-control"], "no-cache")
 
     def test_host_header_must_match_loopback(self) -> None:
+        """Verify host header must match loopback."""
         status, _, body = self._request(
             "GET",
             "/api/health",
@@ -133,6 +144,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["error"]["code"], "invalid_host")
 
     def test_localhost_host_header_is_allowed(self) -> None:
+        """Verify localhost host header is allowed."""
         status, _, _ = self._request(
             "GET",
             "/api/health",
@@ -141,6 +153,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(status, 200)
 
     def test_post_requires_origin(self) -> None:
+        """Verify post requires origin."""
         status, _, data = self._post_json(
             "/api/info",
             {"url": "https://youtu.be/dQw4w9WgXcQ"},
@@ -150,6 +163,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "invalid_origin")
 
     def test_post_rejects_foreign_origin(self) -> None:
+        """Verify post rejects foreign origin."""
         status, _, data = self._post_json(
             "/api/info",
             {"url": "https://youtu.be/dQw4w9WgXcQ"},
@@ -159,6 +173,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "invalid_origin")
 
     def test_post_requires_csrf(self) -> None:
+        """Verify post requires csrf."""
         status, _, data = self._post_json(
             "/api/info",
             {"url": "https://youtu.be/dQw4w9WgXcQ"},
@@ -168,6 +183,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "csrf")
 
     def test_post_requires_json_content_type(self) -> None:
+        """Verify post requires json content type."""
         status, _, data = self._request(
             "POST",
             "/api/info",
@@ -182,6 +198,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(json.loads(data)["error"]["code"], "invalid_content_type")
 
     def test_post_rejects_unknown_fields(self) -> None:
+        """Verify post rejects unknown fields."""
         status, _, data = self._post_json(
             "/api/download",
             {
@@ -194,6 +211,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "unknown_field")
 
     def test_download_validation_happens_before_job(self) -> None:
+        """Verify download validation happens before job."""
         status, _, data = self._post_json(
             "/api/download",
             {"url": "https://youtu.be/dQw4w9WgXcQ", "mode": "video"},
@@ -239,6 +257,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "unsupported_host")
 
     def test_static_serving_does_not_expose_project_files(self) -> None:
+        """Verify static serving does not expose project files."""
         status, headers, body = self._request("GET", "/static/app.js")
         self.assertEqual(status, 200)
         self.assertIn("text/javascript", headers["content-type"])
@@ -250,11 +269,12 @@ class ServerSecurityTests(unittest.TestCase):
                 self.assertEqual(status, 404)
 
     def test_media_routes_reject_invalid_ids(self) -> None:
+        """Verify media routes reject invalid ids."""
         for path in (
             "/api/avatar/not-a-channel",
             "/api/avatar/../app.py",
             "/api/avatar/UC123",
-            "/api/thumbnail/not-a-video",
+            "/api/thumbnail/bad",
             "/api/thumbnail/../app.py",
         ):
             with self.subTest(path=path):
@@ -262,6 +282,7 @@ class ServerSecurityTests(unittest.TestCase):
                 self.assertEqual(status, 404)
 
     def test_api_unknown_route_and_method(self) -> None:
+        """Verify api unknown route and method."""
         status, _, data = self._request("GET", "/api/unknown")
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(data)["error"]["code"], "not_found")
@@ -271,12 +292,14 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(json.loads(data)["error"]["code"], "method_not_allowed")
 
     def test_head_has_no_body_but_headers(self) -> None:
+        """Verify head has no body but headers."""
         status, headers, body = self._request("HEAD", "/static/styles.css")
         self.assertEqual(status, 200)
         self.assertEqual(body, b"")
         self.assertTrue(headers["content-length"].isdigit())
 
     def test_bootstrap_is_not_cacheable(self) -> None:
+        """Verify bootstrap is not cacheable."""
         status, headers, body = self._request("GET", "/api/bootstrap")
         self.assertEqual(status, 200)
         self.assertEqual(headers["cache-control"], "no-store")
@@ -285,6 +308,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertNotIn("folder", payload)
 
     def test_ready_file_is_served_with_attachment(self) -> None:
+        """Verify ready file is served with attachment."""
         job_id = uuid.uuid4().hex
         output_dir = self.runtime / "jobs" / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -330,7 +354,7 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertIn("filename*=UTF-8''", headers["content-disposition"])
             self.assertEqual(headers["cache-control"], "private, no-store")
 
-            # Скачивание через браузер не удаляет временный файл.
+            # A browser download must not delete the temporary file.
             self.assertIsNotNone(self.server.jobs.get(job_id))
             self.assertTrue(file_path.exists())
 
@@ -350,6 +374,7 @@ class ServerSecurityTests(unittest.TestCase):
             shutil.rmtree(output_dir, ignore_errors=True)
 
     def test_missing_ready_file_is_not_found(self) -> None:
+        """Verify missing ready file is not found."""
         status, _, _ = self._request(
             "GET",
             "/api/jobs/" + "0" * 32 + "/file",

@@ -1,8 +1,8 @@
-"""Безопасный локальный загрузчик YouTube.
+"""Safe local media downloader for YouTube and Instagram.
 
-Модуль намеренно не принимает от пользователя произвольные параметры yt-dlp.
-Наружу выставлены только три режима (видео, звук, субтитры), числовое качество
-и проверенный код языка субтитров. Все остальные настройки зашиты в коде.
+Callers can only choose a supported mode, video height, and subtitle language.
+All yt-dlp options are fixed in this module, so untrusted values never reach
+the downloader engine.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import html
 import logging
+import math
 import os
 import re
 import shutil
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 
 import yt_dlp
 from yt_dlp.utils import DownloadError as YtDlpDownloadError
@@ -27,17 +28,21 @@ from yt_dlp.utils import DownloadError as YtDlpDownloadError
 logger = logging.getLogger(__name__)
 
 MAX_URL_LENGTH = 2048
-MAX_TITLE_LENGTH = 200
+MAX_TITLE_LENGTH = 300
+MAX_FILENAME_LENGTH = 160
+MIN_VIDEO_HEIGHT = 144
 MAX_VIDEO_HEIGHT = 4320
 MAX_SUBTITLE_OPTIONS = 200
+MAX_DURATION_SECONDS = 48 * 60 * 60
 MIN_FREE_DISK_BYTES = 256 * 1024 * 1024
 MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
 MAX_AVATAR_BYTES = 512 * 1024
 MIB = 1024 * 1024
 THUMBNAIL_URL_TEMPLATE = "https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-_AVATAR_HOSTS = frozenset({"yt3.googleusercontent.com", "yt3.ggpht.com"})
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) YouTubeDownloader/1.0"
 
 SOURCES = ("youtube", "instagram")
+MODES = ("video", "audio", "subtitles")
 
 _YOUTUBE_HOSTS = frozenset(
     {
@@ -52,9 +57,14 @@ _YOUTUBE_HOSTS = frozenset(
     }
 )
 _INSTAGRAM_HOSTS = frozenset({"instagram.com", "www.instagram.com", "m.instagram.com"})
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
-_SUBTITLE_LANG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,34}$")
+_AVATAR_HOSTS = frozenset({"yt3.googleusercontent.com", "yt3.ggpht.com"})
+_THUMBNAIL_HOSTS = frozenset({"i.ytimg.com", "img.youtube.com"})
+_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+_THUMBNAIL_TYPES = frozenset({"image/jpeg"})
+
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+SUBTITLE_LANG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,34}$")
 _SHORT_PATH_RE = re.compile(r"^/(shorts|embed|live|v)/([A-Za-z0-9_-]{11})/?$")
 _INSTAGRAM_PATH_RE = re.compile(r"^/(p|reel|reels|tv)/([A-Za-z0-9_-]{5,30})/?$")
 _WATCH_PATHS = frozenset({"/watch", "/watch/"})
@@ -71,9 +81,10 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 
 class DownloadError(Exception):
-    """Ожидаемая ошибка, которую можно безопасно показать пользователю."""
+    """Expected download error with a safe user-facing message."""
 
     def __init__(self, code: str, message: str, *, http_status: int = 422) -> None:
+        """Store the error code, display message, and HTTP status."""
         super().__init__(message)
         self.code = code
         self.message = message
@@ -82,33 +93,51 @@ class DownloadError(Exception):
 
 @dataclass(frozen=True)
 class DownloadResult:
+    """Result of one completed download."""
+
     path: Path
     filename: str
     size: int
 
 
+@dataclass(frozen=True)
+class DownloadOptions:
+    """Validated options for one download request."""
+
+    mode: str
+    height: int | None
+    subtitle_lang: str | None
+    auto_subtitle: bool
+
+
 class _QuietLogger:
-    """Не даём yt-dlp печатать технические подробности в консоль."""
+    """Route yt-dlp messages to the application debug log."""
 
-    def debug(self, message: str) -> None:
+    def _log(self, message: str) -> None:
+        """Log one yt-dlp message without printing it to the console."""
         logger.debug("yt-dlp: %s", message)
 
-    def info(self, message: str) -> None:
-        logger.debug("yt-dlp: %s", message)
-
-    def warning(self, message: str) -> None:
-        logger.debug("yt-dlp warning: %s", message)
-
-    def error(self, message: str) -> None:
-        logger.debug("yt-dlp error: %s", message)
+    debug = info = warning = error = _log
 
 
-def _parse_http_url(raw_url: object, service: str) -> Any:
+def _has_userinfo(parsed: SplitResult) -> bool:
+    """Return whether a URL contains a username or password."""
+    return parsed.username is not None or parsed.password is not None
+
+
+def _hostname(parsed: SplitResult) -> str:
+    """Return a normalized lowercase hostname from a parsed URL."""
+    return (parsed.hostname or "").rstrip(".").lower()
+
+
+def _parse_http_url(raw_url: object, service: str) -> SplitResult:
+    """Validate and parse an HTTP(S) URL with common checks."""
+    missing_message = f"Вставьте ссылку на {service}."
     if not isinstance(raw_url, str):
-        raise DownloadError("invalid_url", f"Вставьте ссылку на {service}.", http_status=400)
+        raise DownloadError("invalid_url", missing_message, http_status=400)
     value = raw_url.strip()
     if not value:
-        raise DownloadError("invalid_url", f"Вставьте ссылку на {service}.", http_status=400)
+        raise DownloadError("invalid_url", missing_message, http_status=400)
     if len(value) > MAX_URL_LENGTH:
         raise DownloadError("invalid_url", "Ссылка слишком длинная.", http_status=400)
     if _CONTROL_OR_FORMAT_RE.search(value):
@@ -122,16 +151,15 @@ def _parse_http_url(raw_url: object, service: str) -> Any:
 
     if parsed.scheme.lower() not in {"http", "https"}:
         raise DownloadError("invalid_url", "Поддерживаются только ссылки http(s).", http_status=400)
-    if parsed.username is not None or parsed.password is not None or port is not None:
+    if _has_userinfo(parsed) or port is not None:
         raise DownloadError("invalid_url", "Ссылка содержит недопустимые части.", http_status=400)
     return parsed
 
 
 def normalize_youtube_url(raw_url: object) -> str:
-    """Проверить и нормализовать ссылку YouTube до канонического адреса."""
-
+    """Validate and normalize a YouTube URL to its canonical form."""
     parsed = _parse_http_url(raw_url, "YouTube")
-    host = (parsed.hostname or "").rstrip(".").lower()
+    host = _hostname(parsed)
     if host not in _YOUTUBE_HOSTS:
         raise DownloadError(
             "unsupported_host",
@@ -147,7 +175,7 @@ def normalize_youtube_url(raw_url: object) -> str:
     elif parsed.path in _WATCH_PATHS:
         query = parse_qs(parsed.query, keep_blank_values=True)
         ids = query.get("v", [])
-        if len(ids) == 1 and _VIDEO_ID_RE.fullmatch(ids[0]):
+        if len(ids) == 1 and VIDEO_ID_RE.fullmatch(ids[0]):
             video_id = ids[0]
     else:
         match = _SHORT_PATH_RE.fullmatch(parsed.path)
@@ -164,10 +192,9 @@ def normalize_youtube_url(raw_url: object) -> str:
 
 
 def normalize_instagram_url(raw_url: object) -> str:
-    """Проверить и нормализовать ссылку Instagram на публикацию или Reels."""
-
+    """Validate and normalize an Instagram post or Reel URL."""
     parsed = _parse_http_url(raw_url, "Instagram")
-    host = (parsed.hostname or "").rstrip(".").lower()
+    host = _hostname(parsed)
     if host not in _INSTAGRAM_HOSTS:
         raise DownloadError(
             "unsupported_host",
@@ -181,23 +208,74 @@ def normalize_instagram_url(raw_url: object) -> str:
             "Нужна ссылка на публикацию или Reels Instagram.",
             http_status=400,
         )
-    kind = match.group(1)
-    if kind == "reels":
-        kind = "reel"
+    kind = "reel" if match.group(1) == "reels" else match.group(1)
     return f"https://www.instagram.com/{kind}/{match.group(2)}/"
 
 
+def validate_source(source: object) -> str:
+    """Validate and return a supported media source name."""
+    if source not in SOURCES:
+        raise DownloadError("invalid_source", "Неизвестный источник видео.", http_status=400)
+    return str(source)
+
+
 def normalize_media_url(raw_url: object, source: str = "youtube") -> str:
-    if source == "youtube":
-        return normalize_youtube_url(raw_url)
+    """Normalize a URL for the selected media source."""
+    source = validate_source(source)
     if source == "instagram":
         return normalize_instagram_url(raw_url)
-    raise DownloadError("invalid_source", "Неизвестный источник видео.", http_status=400)
+    return normalize_youtube_url(raw_url)
+
+
+def _valid_height(value: object) -> bool:
+    """Return whether a value is a supported video height."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and MIN_VIDEO_HEIGHT <= value <= MAX_VIDEO_HEIGHT
+    )
+
+
+def validate_request(
+    source: object,
+    mode: object,
+    height: object = None,
+    subtitle_lang: object = None,
+    auto_subtitle: object = False,
+) -> DownloadOptions:
+    """Validate a download selection and return its normalized options."""
+    source = validate_source(source)
+    if mode not in MODES:
+        raise DownloadError("invalid_mode", "Неизвестный режим скачивания.", http_status=400)
+    if source == "instagram" and mode == "subtitles":
+        raise DownloadError(
+            "subtitles_unavailable",
+            "У Instagram нет доступных субтитров.",
+            http_status=400,
+        )
+    if mode == "video":
+        if not _valid_height(height):
+            raise DownloadError(
+                "invalid_quality",
+                "Выберите доступное качество видео.",
+                http_status=400,
+            )
+        return DownloadOptions("video", int(height), None, False)
+    if mode == "subtitles":
+        if not isinstance(subtitle_lang, str) or not SUBTITLE_LANG_RE.fullmatch(subtitle_lang):
+            raise DownloadError("invalid_subtitle", "Выберите язык субтитров.", http_status=400)
+        if not isinstance(auto_subtitle, bool):
+            raise DownloadError(
+                "invalid_subtitle",
+                "Некорректный тип субтитров.",
+                http_status=400,
+            )
+        return DownloadOptions("subtitles", None, subtitle_lang, auto_subtitle)
+    return DownloadOptions("audio", None, None, False)
 
 
 def sanitize_filename(value: object, *, fallback: str = "youtube-video") -> str:
-    """Сделать безопасное отображаемое имя файла (не путь)."""
-
+    """Build a safe display filename, never a filesystem path."""
     if not isinstance(value, str):
         return fallback
 
@@ -208,8 +286,8 @@ def sanitize_filename(value: object, *, fallback: str = "youtube-video") -> str:
     if not text:
         return fallback
 
-    if len(text) > 160:
-        text = text[:160].rstrip(" .")
+    if len(text) > MAX_FILENAME_LENGTH:
+        text = text[:MAX_FILENAME_LENGTH].rstrip(" .")
 
     stem = text.split(".", 1)[0]
     if _WINDOWS_RESERVED_RE.match(stem):
@@ -219,6 +297,7 @@ def sanitize_filename(value: object, *, fallback: str = "youtube-video") -> str:
 
 
 def _clean_text(value: object, limit: int) -> str:
+    """Trim, normalize, and limit display text."""
     if not isinstance(value, str):
         return ""
     text = _CONTROL_OR_FORMAT_RE.sub("", value)
@@ -227,6 +306,7 @@ def _clean_text(value: object, limit: int) -> str:
 
 
 def _safe_int(value: object, *, minimum: int = 0, maximum: int = 10**9) -> int | None:
+    """Parse an integer and enforce its range."""
     try:
         number = int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
@@ -236,19 +316,21 @@ def _safe_int(value: object, *, minimum: int = 0, maximum: int = 10**9) -> int |
     return number
 
 
-def _safe_float(value: object, *, minimum: float = 0.0, maximum: float = 10**9) -> float | None:
+def _safe_float(
+    value: object, *, minimum: float = 0.0, maximum: float = 10**9
+) -> float | None:
+    """Parse a finite float and enforce its range."""
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
         return None
-    if number != number or number in (float("inf"), float("-inf")):
-        return None
-    if number < minimum or number > maximum:
+    if not math.isfinite(number) or number < minimum or number > maximum:
         return None
     return number
 
 
 def _file_size(format_info: dict[str, Any], duration: int | None) -> int | None:
+    """Estimate a media format size in bytes."""
     for key in ("filesize", "filesize_approx"):
         value = _safe_int(format_info.get(key), minimum=1, maximum=10**12)
         if value:
@@ -260,6 +342,7 @@ def _file_size(format_info: dict[str, Any], duration: int | None) -> int | None:
 
 
 def _best_audio_size(formats: list[Any], duration: int | None) -> int | None:
+    """Return the largest available audio-only size."""
     best: int | None = None
     for item in formats:
         if not isinstance(item, dict):
@@ -273,8 +356,9 @@ def _best_audio_size(formats: list[Any], duration: int | None) -> int | None:
 
 
 def _estimate_mode_size(info: dict[str, Any], mode: str, height: int | None) -> int | None:
+    """Estimate the selected output size for disk checks."""
     formats = info.get("formats") or []
-    duration = _safe_int(info.get("duration"), maximum=48 * 60 * 60)
+    duration = _safe_int(info.get("duration"), maximum=MAX_DURATION_SECONDS)
     if mode == "audio":
         return _best_audio_size(formats, duration)
     if mode == "video" and height:
@@ -285,9 +369,8 @@ def _estimate_mode_size(info: dict[str, Any], mode: str, height: int | None) -> 
 
 
 def _collect_qualities(info: dict[str, Any]) -> list[dict[str, Any]]:
-    """Вернуть все доступные разрешения без дублей по высоте."""
-
-    duration = _safe_int(info.get("duration"), maximum=48 * 60 * 60)
+    """Return every available video height once, sorted from highest to lowest."""
+    duration = _safe_int(info.get("duration"), maximum=MAX_DURATION_SECONDS)
     formats = info.get("formats") or []
     audio_size = _best_audio_size(formats, duration)
     by_height: dict[int, tuple[tuple[int, int, float, int], dict[str, Any]]] = {}
@@ -306,19 +389,33 @@ def _collect_qualities(info: dict[str, Any]) -> list[dict[str, Any]]:
         ext = str(item.get("ext") or "")
         if ext not in {"mp4", "webm"}:
             continue
-        height = _safe_int(item.get("height"), minimum=144, maximum=MAX_VIDEO_HEIGHT)
+        height = _safe_int(item.get("height"), minimum=MIN_VIDEO_HEIGHT, maximum=MAX_VIDEO_HEIGHT)
         if height is None:
             continue
 
         fps = _safe_float(item.get("fps"), maximum=240) or 0.0
-        codec = "H.264" if vcodec.startswith("avc1") else "AV1" if vcodec.startswith("av01") else "VP9" if vcodec.startswith(("vp9", "vp09")) else vcodec.upper()
+        if vcodec.startswith("avc1"):
+            codec = "H.264"
+        elif vcodec.startswith("av01"):
+            codec = "AV1"
+        elif vcodec.startswith(("vp9", "vp09")):
+            codec = "VP9"
+        else:
+            codec = vcodec.upper()
         video_size = _file_size(item, duration)
         hdr = str(item.get("dynamic_range") or "SDR").upper() != "SDR"
-        estimate = (video_size + audio_size) if video_size and audio_size else video_size or audio_size
+        estimate = (
+            video_size + audio_size if video_size and audio_size else video_size or audio_size
+        )
 
-        # Приоритет: MP4, H.264, затем больший fps/размер. Это даёт наиболее
-        # совместимый файл, который потом без перекодирования упаковывается в MP4.
-        score = (1 if ext == "mp4" else 0, 1 if vcodec.startswith("avc1") else 0, fps, video_size or 0)
+        # Prefer MP4 and H.264, then higher frame rate and size. This yields
+        # the most compatible source for the final MP4 container.
+        score = (
+            1 if ext == "mp4" else 0,
+            1 if vcodec.startswith("avc1") else 0,
+            fps,
+            video_size or 0,
+        )
         candidate = {
             "height": height,
             "fps": max(1, int(round(fps))) if fps else None,
@@ -330,10 +427,14 @@ def _collect_qualities(info: dict[str, Any]) -> list[dict[str, Any]]:
         if previous is None or score > previous[0]:
             by_height[height] = (score, candidate)
 
-    return [entry[1] for entry in sorted(by_height.values(), key=lambda pair: pair[1]["height"], reverse=True)]
+    return [
+        entry[1]
+        for entry in sorted(by_height.values(), key=lambda pair: pair[1]["height"], reverse=True)
+    ]
 
 
 def _collect_subtitles(info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect validated manual and automatic subtitle codes."""
     result: dict[str, dict[str, Any]] = {}
     sources = (
         (info.get("subtitles"), False),
@@ -343,7 +444,7 @@ def _collect_subtitles(info: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(source, dict):
             continue
         for code in source:
-            if not isinstance(code, str) or not _SUBTITLE_LANG_RE.fullmatch(code):
+            if not isinstance(code, str) or not SUBTITLE_LANG_RE.fullmatch(code):
                 continue
             if code in result:
                 continue
@@ -354,6 +455,7 @@ def _collect_subtitles(info: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _ensure_playable(info: dict[str, Any]) -> None:
+    """Reject playlists, live streams, and unavailable media."""
     if info.get("_type") == "playlist":
         raise DownloadError(
             "playlist",
@@ -367,6 +469,7 @@ def _ensure_playable(info: dict[str, Any]) -> None:
 
 
 def _base_options() -> dict[str, Any]:
+    """Return safe yt-dlp defaults shared by all requests."""
     return {
         "quiet": True,
         "no_warnings": True,
@@ -389,9 +492,10 @@ def _base_options() -> dict[str, Any]:
 
 
 def _map_ytdlp_error(exc: BaseException, *, context: str) -> DownloadError:
+    """Translate yt-dlp failures into safe download errors."""
     raw = str(exc)
     lower = raw.casefold()
-    logger.warning("Ошибка yt-dlp (%s): %s", context, raw[:1500])
+    logger.warning("yt-dlp error (%s): %s", context, raw[:1500])
 
     if "not enough free disk space" in lower:
         return DownloadError(
@@ -401,8 +505,12 @@ def _map_ytdlp_error(exc: BaseException, *, context: str) -> DownloadError:
         )
     if "live streams are not supported" in lower:
         return DownloadError("live", "Прямые трансляции и премьеры пока не поддерживаются.")
-    if "file is larger than max-filesize" in lower or "file is larger than" in lower:
-        return DownloadError("file_too_large", "Файл превышает установленный лимит размера.", http_status=413)
+    if "file is larger than" in lower:
+        return DownloadError(
+            "file_too_large",
+            "Файл превышает установленный лимит размера.",
+            http_status=413,
+        )
     if "private video" in lower or "video is private" in lower:
         return DownloadError("not_available", "Это приватное видео. Доступ к нему закрыт.")
     if (
@@ -466,7 +574,11 @@ def _map_ytdlp_error(exc: BaseException, *, context: str) -> DownloadError:
             "Не найден ffmpeg. Переустановите зависимости приложения.",
             http_status=500,
         )
-    if "unable to download webpage" in lower or "failed to resolve" in lower or "connection" in lower:
+    if (
+        "unable to download webpage" in lower
+        or "failed to resolve" in lower
+        or "connection" in lower
+    ):
         return DownloadError(
             "network",
             "Не удалось подключиться к YouTube. Проверьте интернет-соединение.",
@@ -484,6 +596,7 @@ def _map_ytdlp_error(exc: BaseException, *, context: str) -> DownloadError:
 
 @functools.lru_cache(maxsize=1)
 def _ffmpeg_executable() -> str:
+    """Return the bundled or configured ffmpeg executable."""
     override = os.environ.get("VD_FFMPEG", "").strip()
     if override:
         candidate = Path(override).expanduser()
@@ -502,7 +615,7 @@ def _ffmpeg_executable() -> str:
         if candidate.is_file():
             return str(candidate.resolve())
     except Exception:
-        logger.debug("Не удалось получить ffmpeg из imageio-ffmpeg", exc_info=True)
+        logger.debug("Could not load ffmpeg from imageio-ffmpeg", exc_info=True)
 
     candidate = shutil.which("ffmpeg")
     if candidate and Path(candidate).is_file():
@@ -516,14 +629,19 @@ def _ffmpeg_executable() -> str:
 
 
 def _extract_info(url: str) -> dict[str, Any]:
+    """Extract validated metadata for a normalized URL."""
     try:
         with yt_dlp.YoutubeDL(_base_options()) as ydl:
             info = ydl.extract_info(url, download=False)
     except YtDlpDownloadError as exc:
         raise _map_ytdlp_error(exc, context="metadata") from exc
     except Exception as exc:
-        logger.exception("Непредвиденная ошибка при получении метаданных")
-        raise DownloadError("metadata_failed", "Не удалось получить сведения о видео.", http_status=502) from exc
+        logger.exception("Unexpected error while reading metadata")
+        raise DownloadError(
+            "metadata_failed",
+            "Не удалось получить сведения о видео.",
+            http_status=502,
+        ) from exc
 
     if not isinstance(info, dict) or info.get("_type") == "playlist":
         raise DownloadError(
@@ -534,43 +652,54 @@ def _extract_info(url: str) -> dict[str, Any]:
     return info
 
 
-def get_video_info(raw_url: object, source: str = "youtube") -> dict[str, Any]:
-    """Получить безопасную часть метаданных для интерфейса."""
+def _youtube_video_id(info: dict[str, Any], url: str) -> str:
+    """Return a validated YouTube video ID from metadata or the URL."""
+    video_id = str(info.get("id") or "")
+    if VIDEO_ID_RE.fullmatch(video_id):
+        return video_id
+    return parse_qs(urlsplit(url).query).get("v", [""])[0]
 
+
+def _fallback_label(source: str) -> str:
+    """Return the platform name used when metadata has none."""
+    return "YouTube" if source == "youtube" else "Instagram"
+
+
+def _fallback_title(source: str) -> str:
+    """Return the localized title used when metadata has none."""
+    return f"Видео {_fallback_label(source)}"
+
+
+def get_video_info(raw_url: object, source: str = "youtube") -> dict[str, Any]:
+    """Return only the metadata needed by the interface."""
     url = normalize_media_url(raw_url, source)
     info = _extract_info(url)
-    fallback_title = "Видео YouTube" if source == "youtube" else "Видео Instagram"
-    title = _clean_text(info.get("title"), 300)
+    title = _clean_text(info.get("title"), MAX_TITLE_LENGTH)
     if source == "instagram":
         description = info.get("description")
-        first_line = ""
         if isinstance(description, str):
             first_line = next(
                 (line.strip() for line in description.splitlines() if line.strip()),
                 "",
             )
-        title = _clean_text(first_line, 300) or title
-    title = title or fallback_title
+            title = _clean_text(first_line, MAX_TITLE_LENGTH) or title
+    title = title or _fallback_title(source)
     channel = _clean_text(
         info.get("uploader") or info.get("uploader_id") or info.get("channel"),
         160,
-    )
-    duration = _safe_int(info.get("duration"), maximum=48 * 60 * 60)
+    ) or _fallback_label(source)
+    duration = _safe_int(info.get("duration"), maximum=MAX_DURATION_SECONDS)
 
-    video_id = ""
-    channel_id = ""
     thumbnail_url = None
     channel_avatar_url = None
     if source == "youtube":
-        video_id = str(info.get("id") or "")
-        if not _VIDEO_ID_RE.fullmatch(video_id):
-            video_id = parse_qs(urlsplit(url).query).get("v", [""])[0]
+        video_id = _youtube_video_id(info, url)
         channel_id_value = info.get("channel_id")
         channel_id = channel_id_value.strip() if isinstance(channel_id_value, str) else ""
-        if not _CHANNEL_ID_RE.fullmatch(channel_id):
+        if not CHANNEL_ID_RE.fullmatch(channel_id):
             channel_id = ""
         thumbnail_url = (
-            f"/api/thumbnail/{video_id}" if _VIDEO_ID_RE.fullmatch(video_id) else None
+            f"/api/thumbnail/{video_id}" if VIDEO_ID_RE.fullmatch(video_id) else None
         )
         channel_avatar_url = f"/api/avatar/{channel_id}" if channel_id else None
 
@@ -580,11 +709,8 @@ def get_video_info(raw_url: object, source: str = "youtube") -> dict[str, Any]:
     )
     return {
         "url": url,
-        "source": source,
-        "video_id": video_id,
         "title": title,
         "channel": channel,
-        "channel_id": channel_id,
         "channel_avatar_url": channel_avatar_url,
         "duration": duration,
         "thumbnail_url": thumbnail_url,
@@ -594,63 +720,31 @@ def get_video_info(raw_url: object, source: str = "youtube") -> dict[str, Any]:
     }
 
 
-def fetch_thumbnail(video_id: str) -> tuple[bytes, str] | None:
-    """Получить превью с фиксированного хоста YouTube (без произвольных URL)."""
-
-    if not isinstance(video_id, str) or not _VIDEO_ID_RE.fullmatch(video_id):
-        return None
-    url = THUMBNAIL_URL_TEMPLATE.format(video_id=video_id)
-    request = urllib_request.Request(
-        url,
-        headers={
-            "Accept": "image/jpeg",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) YouTubeDownloader/1.0",
-        },
-    )
-    try:
-        with urllib_request.urlopen(request, timeout=8) as response:
-            final_host = (urlsplit(response.geturl()).hostname or "").lower()
-            if final_host not in {"i.ytimg.com", "img.youtube.com"}:
-                return None
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            if not content_type.startswith("image/jpeg"):
-                return None
-            data = response.read(MAX_THUMBNAIL_BYTES + 1)
-    except (urllib_error.URLError, OSError, ValueError):
-        logger.debug("Не удалось загрузить превью %s", video_id, exc_info=True)
-        return None
-    if not data or len(data) > MAX_THUMBNAIL_BYTES or not data.startswith(b"\xff\xd8\xff"):
-        return None
-    return data, "image/jpeg"
-
-
-def _is_safe_avatar_url(url: object) -> bool:
-    if not isinstance(url, str) or not url or len(url) > 2048:
+def _is_safe_image_url(url: object, allowed_hosts: frozenset[str]) -> bool:
+    """Check that an image URL is HTTPS on an allowed host."""
+    if not isinstance(url, str) or not url or len(url) > MAX_URL_LENGTH:
         return False
     try:
         parsed = urlsplit(url)
         port = parsed.port
     except ValueError:
         return False
-    if parsed.scheme != "https" or parsed.username is not None or parsed.password is not None:
+    if parsed.scheme != "https" or _has_userinfo(parsed):
         return False
     if port is not None:
         return False
-    host = (parsed.hostname or "").rstrip(".").lower()
-    return host in _AVATAR_HOSTS and bool(parsed.path)
+    return _hostname(parsed) in allowed_hosts and bool(parsed.path)
 
 
 def _small_avatar_url(url: str) -> str:
-    """Запросить у YouTube уменьшенную версию аватарки, а не 900×900."""
-
+    """Request a small avatar variant instead of the full-size image."""
     if re.search(r"=s\d+", url):
         return re.sub(r"=s\d+.*$", "=s176-c-k-c0x00ffffff-no-rj", url, count=1)
     return f"{url}=s176-c-k-c0x00ffffff-no-rj"
 
 
 def _pick_channel_avatar_url(info: dict[str, Any]) -> str | None:
-    """Выбрать квадратную аватарку канала, а не баннер."""
-
+    """Choose a square channel avatar rather than a banner image."""
     thumbnails = info.get("thumbnails")
     if not isinstance(thumbnails, list):
         return None
@@ -661,7 +755,7 @@ def _pick_channel_avatar_url(info: dict[str, Any]) -> str | None:
         if not isinstance(item, dict):
             continue
         url = item.get("url")
-        if not _is_safe_avatar_url(url):
+        if not _is_safe_image_url(url, _AVATAR_HOSTS):
             continue
         identifier = str(item.get("id") or "")
         if identifier in {"7", "avatar_uncropped"}:
@@ -675,15 +769,13 @@ def _pick_channel_avatar_url(info: dict[str, Any]) -> str | None:
     candidates = preferred or square
     if not candidates:
         return None
-    # "7" — нормальная квадратная версия 900×900; avatar_uncropped — исходник.
-    ordered = sorted(
-        candidates,
-        key=lambda value: 0 if "=s900" in value else 1,
-    )
+    # "7" is the normal 900x900 crop; avatar_uncropped is the original image.
+    ordered = sorted(candidates, key=lambda value: 0 if "=s900" in value else 1)
     return _small_avatar_url(ordered[0])
 
 
 def _sniff_image_type(data: bytes) -> str | None:
+    """Detect an image MIME type from its magic bytes."""
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -695,10 +787,51 @@ def _sniff_image_type(data: bytes) -> str | None:
     return None
 
 
-def fetch_channel_avatar(channel_id: str) -> tuple[bytes, str] | None:
-    """Получить логотип канала по проверенному ID, без произвольных адресов."""
+def _fetch_image(
+    url: str,
+    *,
+    max_bytes: int,
+    allowed_hosts: frozenset[str],
+    image_types: frozenset[str],
+) -> tuple[bytes, str] | None:
+    """Download a small image from an allowed host and validate its type."""
+    if not _is_safe_image_url(url, allowed_hosts):
+        return None
+    request = urllib_request.Request(
+        url,
+        headers={"Accept": ", ".join(sorted(image_types)), "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=8) as response:
+            if not _is_safe_image_url(response.geturl(), allowed_hosts):
+                return None
+            data = response.read(max_bytes + 1)
+    except (urllib_error.URLError, OSError, ValueError):
+        logger.debug("Failed to fetch image from %s", url, exc_info=True)
+        return None
+    if not data or len(data) > max_bytes:
+        return None
+    content_type = _sniff_image_type(data)
+    if content_type not in image_types:
+        return None
+    return data, content_type
 
-    if not isinstance(channel_id, str) or not _CHANNEL_ID_RE.fullmatch(channel_id):
+
+def fetch_thumbnail(video_id: str) -> tuple[bytes, str] | None:
+    """Fetch a YouTube thumbnail for a validated video ID."""
+    if not isinstance(video_id, str) or not VIDEO_ID_RE.fullmatch(video_id):
+        return None
+    return _fetch_image(
+        THUMBNAIL_URL_TEMPLATE.format(video_id=video_id),
+        max_bytes=MAX_THUMBNAIL_BYTES,
+        allowed_hosts=_THUMBNAIL_HOSTS,
+        image_types=_THUMBNAIL_TYPES,
+    )
+
+
+def fetch_channel_avatar(channel_id: str) -> tuple[bytes, str] | None:
+    """Fetch a channel avatar for a validated channel ID."""
+    if not isinstance(channel_id, str) or not CHANNEL_ID_RE.fullmatch(channel_id):
         return None
 
     options = _base_options()
@@ -710,10 +843,10 @@ def fetch_channel_avatar(channel_id: str) -> tuple[bytes, str] | None:
                 download=False,
             )
     except (YtDlpDownloadError, OSError, ValueError) as exc:
-        logger.debug("Не удалось получить данные канала %s: %s", channel_id, exc)
+        logger.debug("Failed to read channel %s: %s", channel_id, exc)
         return None
     except Exception:
-        logger.debug("Непредвиденная ошибка при получении канала %s", channel_id, exc_info=True)
+        logger.debug("Unexpected error while reading channel %s", channel_id, exc_info=True)
         return None
 
     if not isinstance(channel_info, dict):
@@ -721,29 +854,12 @@ def fetch_channel_avatar(channel_id: str) -> tuple[bytes, str] | None:
     avatar_url = _pick_channel_avatar_url(channel_info)
     if avatar_url is None:
         return None
-
-    request = urllib_request.Request(
+    return _fetch_image(
         avatar_url,
-        headers={
-            "Accept": "image/webp,image/png,image/jpeg",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) YouTubeDownloader/1.0",
-        },
+        max_bytes=MAX_AVATAR_BYTES,
+        allowed_hosts=_AVATAR_HOSTS,
+        image_types=_IMAGE_TYPES,
     )
-    try:
-        with urllib_request.urlopen(request, timeout=8) as response:
-            final_url = response.geturl()
-            if not _is_safe_avatar_url(final_url):
-                return None
-            data = response.read(MAX_AVATAR_BYTES + 1)
-    except (urllib_error.URLError, OSError, ValueError):
-        logger.debug("Не удалось загрузить аватар канала %s", channel_id, exc_info=True)
-        return None
-    if not data or len(data) > MAX_AVATAR_BYTES:
-        return None
-    content_type = _sniff_image_type(data)
-    if content_type is None:
-        return None
-    return data, content_type
 
 
 def _match_filter_for_request(
@@ -752,7 +868,10 @@ def _match_filter_for_request(
     height: int | None,
     max_file_bytes: int,
 ) -> Callable[..., str | None]:
+    """Return a yt-dlp filter for live and disk checks."""
+
     def match_filter(info: dict[str, Any], *, incomplete: bool = False) -> str | None:
+        """Reject unsupported streams and insufficient disk space."""
         if info.get("_type") == "playlist":
             return "Playlists are not supported"
         if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming"}:
@@ -772,9 +891,22 @@ def _match_filter_for_request(
     return match_filter
 
 
-def _video_format_selector(height: int) -> str:
-    if not 144 <= height <= MAX_VIDEO_HEIGHT:
-        raise DownloadError("invalid_quality", "Недопустимое качество видео.", http_status=400)
+def _format_selector(source: str, height: int) -> str:
+    """Build a yt-dlp video format selector for the source and height."""
+    if not _valid_height(height):
+        raise DownloadError(
+            "invalid_quality",
+            "Недопустимое качество видео.",
+            http_status=400,
+        )
+    if source == "instagram":
+        return (
+            f"bv*[height={height}]+ba/"
+            f"bv*[height={height}]/"
+            f"b[height={height}]/"
+            f"b[height<={height}]/"
+            "b"
+        )
     return (
         f"bv*[height={height}][ext=mp4][vcodec^=avc1]+ba[ext=m4a]/"
         f"bv*[height={height}][ext=mp4]+ba[ext=m4a]/"
@@ -784,19 +916,24 @@ def _video_format_selector(height: int) -> str:
     )
 
 
-def _instagram_format_selector(height: int) -> str:
-    if not 144 <= height <= MAX_VIDEO_HEIGHT:
-        raise DownloadError("invalid_quality", "Недопустимое качество видео.", http_status=400)
-    return (
-        f"bv*[height={height}]+ba/"
-        f"bv*[height={height}]/"
-        f"b[height={height}]/"
-        f"b[height<={height}]/"
-        "b"
-    )
+def _emit_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    payload: dict[str, Any],
+) -> None:
+    """Send a progress update and ignore callback failures."""
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception:
+        logger.debug("Progress callback failed", exc_info=True)
 
 
-def _progress_hook(mode: str, callback: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any]], None]:
+def _progress_hook(
+    mode: str,
+    callback: Callable[[dict[str, Any]], None],
+) -> Callable[[dict[str, Any]], None]:
+    """Return a yt-dlp hook that reports download progress."""
     phase = {
         "video": "Скачивание видео",
         "audio": "Скачивание звука",
@@ -804,36 +941,37 @@ def _progress_hook(mode: str, callback: Callable[[dict[str, Any]], None]) -> Cal
     }.get(mode, "Скачивание")
 
     def hook(payload: dict[str, Any]) -> None:
+        """Forward one yt-dlp progress event."""
         if not isinstance(payload, dict):
             return
         status = payload.get("status")
         if status == "downloading":
             downloaded = _safe_int(payload.get("downloaded_bytes"), maximum=10**13) or 0
-            total = _safe_int(payload.get("total_bytes") or payload.get("total_bytes_estimate"), maximum=10**13)
-            percent = (downloaded / total * 100.0) if total else None
-            try:
-                callback(
-                    {
-                        "phase": phase,
-                        "percent": percent,
-                        "downloaded_bytes": downloaded,
-                        "total_bytes": total,
-                        "speed": _safe_float(payload.get("speed"), maximum=10**12),
-                        "eta": _safe_int(payload.get("eta"), maximum=7 * 24 * 60 * 60),
-                    }
-                )
-            except Exception:
-                logger.debug("Ошибка в progress callback", exc_info=True)
+            total = _safe_int(
+                payload.get("total_bytes") or payload.get("total_bytes_estimate"),
+                maximum=10**13,
+            )
+            _emit_progress(
+                callback,
+                {
+                    "phase": phase,
+                    "percent": (downloaded / total * 100.0) if total else None,
+                    "downloaded_bytes": downloaded,
+                    "total_bytes": total,
+                    "speed": _safe_float(payload.get("speed"), maximum=10**12),
+                    "eta": _safe_int(payload.get("eta"), maximum=7 * 24 * 60 * 60),
+                },
+            )
         elif status == "finished":
-            try:
-                callback({"phase": "Обработка файла", "percent": 88.0})
-            except Exception:
-                logger.debug("Ошибка в progress callback", exc_info=True)
+            _emit_progress(callback, {"phase": "Обработка файла", "percent": 88.0})
 
     return hook
 
 
-def _postprocessor_hook(callback: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any]], None]:
+def _postprocessor_hook(
+    callback: Callable[[dict[str, Any]], None],
+) -> Callable[[dict[str, Any]], None]:
+    """Return a yt-dlp hook that reports post-processing phases."""
     labels = {
         "FFmpegMerger": "Объединение видео и звука",
         "FFmpegVideoRemuxer": "Подготовка MP4",
@@ -842,14 +980,14 @@ def _postprocessor_hook(callback: Callable[[dict[str, Any]], None]) -> Callable[
     }
 
     def hook(payload: dict[str, Any]) -> None:
+        """Forward one yt-dlp post-processing event."""
         if not isinstance(payload, dict) or payload.get("status") != "started":
             return
         name = str(payload.get("postprocessor") or "")
-        label = labels.get(name, "Обработка файла")
-        try:
-            callback({"phase": label, "percent": 92.0})
-        except Exception:
-            logger.debug("Ошибка в postprocessor callback", exc_info=True)
+        _emit_progress(
+            callback,
+            {"phase": labels.get(name, "Обработка файла"), "percent": 92.0},
+        )
 
     return hook
 
@@ -865,6 +1003,7 @@ def _download_options(
     max_file_bytes: int,
     progress: Callable[[dict[str, Any]], None] | None,
 ) -> dict[str, Any]:
+    """Build controlled yt-dlp options for one validated mode."""
     options = _base_options()
     options.update(
         {
@@ -885,16 +1024,9 @@ def _download_options(
         options["postprocessor_hooks"] = [_postprocessor_hook(progress)]
 
     if mode == "video":
-        if height is None:
-            raise DownloadError("invalid_quality", "Выберите качество видео.", http_status=400)
-        selector = (
-            _video_format_selector(height)
-            if source == "youtube"
-            else _instagram_format_selector(height)
-        )
         options.update(
             {
-                "format": selector,
+                "format": _format_selector(source, height or 0),
                 "merge_output_format": "mp4",
                 "ffmpeg_location": _ffmpeg_executable(),
                 "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
@@ -914,27 +1046,22 @@ def _download_options(
                 ],
             }
         )
-    elif mode == "subtitles":
-        if not subtitle_lang or not _SUBTITLE_LANG_RE.fullmatch(subtitle_lang):
-            raise DownloadError("invalid_subtitle", "Выберите язык субтитров.", http_status=400)
+    else:
         options.update(
             {
                 "skip_download": True,
                 "writesubtitles": not auto_subtitle,
                 "writeautomaticsub": auto_subtitle,
-                "subtitleslangs": [subtitle_lang],
+                "subtitleslangs": [subtitle_lang] if subtitle_lang else [],
                 "subtitlesformat": "vtt",
             }
         )
-    else:
-        raise DownloadError("invalid_mode", "Неизвестный режим скачивания.", http_status=400)
 
     return options
 
 
 def vtt_to_text(content: str) -> str:
-    """Преобразовать WebVTT (или SRT) в аккуратный обычный текст."""
-
+    """Convert WebVTT or SRT subtitles to readable plain text."""
     text = content.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     if not text.strip():
         return ""
@@ -949,15 +1076,18 @@ def vtt_to_text(content: str) -> str:
             continue
 
         timestamp_index = next(
-            (index for index, line in enumerate(raw_lines) if "-->" in line and _TIMESTAMP_RE.match(line)),
+            (
+                index
+                for index, line in enumerate(raw_lines)
+                if "-->" in line and _TIMESTAMP_RE.match(line)
+            ),
             None,
         )
         if timestamp_index is None:
             continue
 
-        cue_lines = raw_lines[timestamp_index + 1 :]
         cleaned_parts: list[str] = []
-        for cue_line in cue_lines:
+        for cue_line in raw_lines[timestamp_index + 1 :]:
             cue_line = _BR_RE.sub(" ", cue_line)
             cue_line = _TAG_RE.sub("", cue_line)
             cue_line = html.unescape(cue_line)
@@ -974,44 +1104,58 @@ def vtt_to_text(content: str) -> str:
 
 
 def _find_output_file(output_dir: Path, extensions: set[str]) -> Path | None:
+    """Find the largest expected output file inside a job."""
     root = output_dir.resolve()
     candidates: list[Path] = []
     try:
         for path in output_dir.iterdir():
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in extensions:
+            if not path.is_file() or path.suffix.lower() not in extensions:
                 continue
             try:
                 resolved = path.resolve()
             except OSError:
                 continue
-            if resolved.parent != root:
-                continue
-            candidates.append(resolved)
+            if resolved.parent == root:
+                candidates.append(resolved)
     except OSError:
         return None
     if not candidates:
         return None
-    return max(candidates, key=lambda item: item.stat().st_size)
+    try:
+        return max(candidates, key=lambda item: item.stat().st_size)
+    except OSError:
+        return None
 
 
 def _display_filename(title: str, video_id: str, suffix: str, extension: str) -> str:
-    base = f"{title} [{video_id}]"
-    if suffix:
-        base = f"{base} {suffix}"
-    return sanitize_filename(f"{base}.{extension}", fallback=f"youtube-{video_id}.{extension}")
+    """Build a safe user-facing output filename."""
+    parts = [title, f"[{video_id}]" if video_id else "", suffix]
+    base = sanitize_filename(" ".join(part for part in parts if part), fallback="video")
+    return f"{base}.{extension}"
 
 
 def _finalize_file(output_dir: Path, source: Path, target_name: str, max_file_bytes: int) -> Path:
+    """Validate and rename the final output file."""
     try:
         size = source.stat().st_size
     except OSError as exc:
-        raise DownloadError("download_failed", "Скачанный файл не найден.", http_status=500) from exc
+        raise DownloadError(
+            "download_failed",
+            "Скачанный файл не найден.",
+            http_status=500,
+        ) from exc
     if size <= 0:
-        raise DownloadError("empty_file", "Получился пустой файл. Попробуйте другой вариант.", http_status=422)
+        raise DownloadError(
+            "empty_file",
+            "Получился пустой файл. Попробуйте другой вариант.",
+            http_status=422,
+        )
     if size > max_file_bytes:
-        raise DownloadError("file_too_large", "Файл превышает установленный лимит размера.", http_status=413)
+        raise DownloadError(
+            "file_too_large",
+            "Файл превышает установленный лимит размера.",
+            http_status=413,
+        )
 
     target = output_dir / target_name
     try:
@@ -1022,6 +1166,7 @@ def _finalize_file(output_dir: Path, source: Path, target_name: str, max_file_by
 
 
 def _convert_subtitles(output_dir: Path) -> Path:
+    """Convert downloaded subtitles to plain UTF-8 text."""
     source = _find_output_file(output_dir, {".vtt", ".srt"})
     if source is None:
         raise DownloadError(
@@ -1031,7 +1176,11 @@ def _convert_subtitles(output_dir: Path) -> Path:
     try:
         content = source.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
-        raise DownloadError("subtitles_unavailable", "Не удалось прочитать субтитры.", http_status=500) from exc
+        raise DownloadError(
+            "subtitles_unavailable",
+            "Не удалось прочитать субтитры.",
+            http_status=500,
+        ) from exc
 
     text = vtt_to_text(content)
     if not text:
@@ -1041,12 +1190,16 @@ def _convert_subtitles(output_dir: Path) -> Path:
         with target.open("w", encoding="utf-8-sig", newline="\n") as handle:
             handle.write(text + "\n")
     except OSError as exc:
-        raise DownloadError("file_error", "Не удалось сохранить субтитры.", http_status=500) from exc
+        raise DownloadError(
+            "file_error",
+            "Не удалось сохранить субтитры.",
+            http_status=500,
+        ) from exc
 
     try:
         source.unlink(missing_ok=True)
     except OSError:
-        logger.debug("Не удалось удалить исходный VTT-файл", exc_info=True)
+        logger.debug("Failed to remove the source subtitle file", exc_info=True)
     return target
 
 
@@ -1062,35 +1215,18 @@ def download(
     max_file_bytes: int = 4 * 1024 * MIB,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> DownloadResult:
-    """Скачать один файл в заранее созданный каталог задания."""
-
-    if source not in SOURCES:
-        raise DownloadError("invalid_source", "Неизвестный источник видео.", http_status=400)
-    if mode not in {"video", "audio", "subtitles"}:
-        raise DownloadError("invalid_mode", "Неизвестный режим скачивания.", http_status=400)
-    if source == "instagram" and mode == "subtitles":
-        raise DownloadError(
-            "subtitles_unavailable",
-            "У Instagram нет доступных субтитров.",
-            http_status=400,
-        )
-    if mode == "video":
-        if not isinstance(height, int) or isinstance(height, bool):
-            raise DownloadError("invalid_quality", "Выберите качество видео.", http_status=400)
-        if not 144 <= height <= MAX_VIDEO_HEIGHT:
-            raise DownloadError("invalid_quality", "Недопустимое качество видео.", http_status=400)
-    if mode == "subtitles":
-        if not isinstance(subtitle_lang, str) or not _SUBTITLE_LANG_RE.fullmatch(subtitle_lang):
-            raise DownloadError("invalid_subtitle", "Выберите язык субтитров.", http_status=400)
-        if not isinstance(auto_subtitle, bool):
-            auto_subtitle = False
-
+    """Download one file into a pre-created job directory."""
+    request = validate_request(source, mode, height, subtitle_lang, auto_subtitle)
     url = normalize_media_url(raw_url, source)
     output_dir = output_dir.resolve()
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise DownloadError("file_error", "Не удалось создать папку для загрузки.", http_status=500) from exc
+        raise DownloadError(
+            "file_error",
+            "Не удалось создать папку для загрузки.",
+            http_status=500,
+        ) from exc
 
     try:
         free = shutil.disk_usage(output_dir).free
@@ -1107,19 +1243,14 @@ def download(
             http_status=507,
         )
 
-    if progress is not None:
-        try:
-            progress({"phase": "Получение информации", "percent": 2.0})
-        except Exception:
-            logger.debug("Ошибка в progress callback", exc_info=True)
-
+    _emit_progress(progress, {"phase": "Получение информации", "percent": 2.0})
     options = _download_options(
         source,
-        mode,
+        request.mode,
         output_dir,
-        height=height,
-        subtitle_lang=subtitle_lang,
-        auto_subtitle=auto_subtitle,
+        height=request.height,
+        subtitle_lang=request.subtitle_lang,
+        auto_subtitle=request.auto_subtitle,
         max_file_bytes=max_file_bytes,
         progress=progress,
     )
@@ -1128,50 +1259,57 @@ def download(
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
     except YtDlpDownloadError as exc:
-        raise _map_ytdlp_error(exc, context=mode) from exc
+        raise _map_ytdlp_error(exc, context=request.mode) from exc
     except DownloadError:
         raise
     except Exception as exc:
-        logger.exception("Непредвиденная ошибка при скачивании (%s)", mode)
-        raise DownloadError("download_failed", "Не удалось скачать файл. Попробуйте ещё раз.", http_status=500) from exc
+        logger.exception("Unexpected download error (%s)", request.mode)
+        raise DownloadError(
+            "download_failed",
+            "Не удалось скачать файл. Попробуйте ещё раз.",
+            http_status=500,
+        ) from exc
 
     if not isinstance(info, dict):
-        raise DownloadError("download_failed", "YouTube не вернул данные о видео.", http_status=502)
+        raise DownloadError(
+            "download_failed",
+            "YouTube не вернул данные о видео.",
+            http_status=502,
+        )
     _ensure_playable(info)
 
-    title = _clean_text(info.get("title"), MAX_TITLE_LENGTH) or "Видео YouTube"
-    video_id = str(info.get("id") or "")
-    if not _VIDEO_ID_RE.fullmatch(video_id):
-        video_id = parse_qs(urlsplit(url).query).get("v", [""])[0]
+    title = _clean_text(info.get("title"), MAX_TITLE_LENGTH) or _fallback_title(source)
+    video_id = _youtube_video_id(info, url)
 
-    if mode == "video":
-        source = _find_output_file(output_dir, {".mp4"})
-        if source is None:
+    if request.mode == "video":
+        file_path = _find_output_file(output_dir, {".mp4"})
+        if file_path is None:
             raise DownloadError(
                 "conversion_failed",
                 "Не удалось подготовить MP4. Попробуйте другое качество.",
                 http_status=500,
             )
-        path = _finalize_file(output_dir, source, "video.mp4", max_file_bytes)
-        filename = _display_filename(title, video_id, f"{height}p", "mp4")
-    elif mode == "audio":
-        source = _find_output_file(output_dir, {".mp3"})
-        if source is None:
+        path = _finalize_file(output_dir, file_path, "video.mp4", max_file_bytes)
+        filename = _display_filename(title, video_id, f"{request.height}p", "mp4")
+    elif request.mode == "audio":
+        file_path = _find_output_file(output_dir, {".mp3"})
+        if file_path is None:
             raise DownloadError(
                 "conversion_failed",
                 "Не удалось подготовить MP3. Попробуйте ещё раз.",
                 http_status=500,
             )
-        path = _finalize_file(output_dir, source, "audio.mp3", max_file_bytes)
+        path = _finalize_file(output_dir, file_path, "audio.mp3", max_file_bytes)
         filename = _display_filename(title, video_id, "", "mp3")
     else:
-        if progress is not None:
-            try:
-                progress({"phase": "Сохранение субтитров", "percent": 80.0})
-            except Exception:
-                logger.debug("Ошибка в progress callback", exc_info=True)
+        _emit_progress(progress, {"phase": "Сохранение субтитров", "percent": 80.0})
         path = _convert_subtitles(output_dir)
-        filename = _display_filename(title, video_id, f"[{subtitle_lang}]", "txt")
+        filename = _display_filename(
+            title,
+            video_id,
+            f"[{request.subtitle_lang}]",
+            "txt",
+        )
 
     size = path.stat().st_size
     return DownloadResult(path=path, filename=filename, size=size)
