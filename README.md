@@ -1,89 +1,73 @@
-# YouTube & Instagram Downloader
+# LordDownload
 
-A small local web application for downloading public YouTube and Instagram
-media. The server listens only on `127.0.0.1`, so it is not accessible from other
-computers or from the internet. Media is processed on your own PC, and the
-application never asks for account credentials or browser cookies.
+Небольшое локальное веб-приложение для скачивания общедоступных медиа с YouTube и Instagram. Сервер слушает только `127.0.0.1`, поэтому он недоступен с других компьютеров и из интернета. Медиа обрабатываются на вашем собственном ПК, и приложение никогда не запрашивает учётные данные аккаунта или куки браузера.
 
-## What it supports
+> **Важно:** проект написан с помощью ИИ и может работать криво. Возможны ошибки в обработке ссылок, зависания при скачивании, некорректные названия файлов и другие неожиданные баги. Если что-то сломалось — не удивляйтесь, а лучше сообщите об этом в Issues на GitHub. Используйте на свой страх и риск.
 
-- YouTube videos, Shorts, and music links.
-- Public Instagram posts, Reels, and IGTV videos.
-- Video output as MP4, audio output as MP3, and YouTube subtitles as plain text.
-- One video or post per link. Playlists, live streams, private content,
-  age-restricted content, and content that requires a login are not supported.
+## Что поддерживается
 
-## How to use
+- Видео YouTube, Shorts и ссылки на музыку.
+- Общедоступные публикации Instagram, Reels и видео IGTV.
+- Видео на выходе в MP4, аудио в MP3, субтитры YouTube в виде обычного текста.
+- Одно видео или одна публикация на ссылку. Плейлисты, трансляции в прямом эфире, приватный контент, контент с возрастными ограничениями и контент, требующий входа в аккаунт, не поддерживаются.
 
-### Requirements
+## Как пользоваться
 
-- Windows 10 or newer.
-- Python 3.10 or newer, installed with **Add Python to PATH** enabled.
-- An internet connection and a modern browser.
+### Требования
 
-FFmpeg is installed together with the Python dependencies, so no separate
-system installation is needed.
+- Windows 10 или новее.
+- Python 3.10 или новее, установленный с включённым пунктом **Add Python to PATH**.
+- Подключение к интернету и современный браузер.
 
-### Start the application
+FFmpeg устанавливается вместе с зависимостями Python, поэтому отдельная системная установка не требуется.
 
-1. Double-click `start.bat`.
-2. On the first launch, the script creates a local environment and installs the
-   dependencies. This can take a few minutes.
-3. The interface opens in your browser at `http://127.0.0.1:8765`. If it does
-   not open automatically, open that address manually.
-4. Keep the console window open while the application is running.
+### Запуск приложения
 
-To stop the application, press `Ctrl+C` in the console or close the console
-window. If port `8765` is already in use, start the app from the project folder
-with:
+1. Дважды щёлкните `start.bat`.
+2. При первом запуске скрипт создаёт локальное окружение и устанавливает зависимости. Это может занять несколько минут.
+3. Интерфейс открывается в браузере по адресу `http://127.0.0.1:8765`. Если он не открылся автоматически, откройте этот адрес вручную.
+4. Пока приложение работает, не закрывайте окно консоли.
+
+Чтобы остановить приложение, нажмите `Ctrl+C` в консоли или закройте окно консоли. Если порт `8765` уже занят, запустите приложение из папки проекта командой:
 
 ```powershell
 .venv\Scripts\python.exe app.py --port 8766 --open
 ```
 
-### Download a file
+### Скачивание файла
 
-1. Select **YouTube** or **Instagram**.
-2. Paste a link to a single video or post.
-3. Click **Получить варианты**.
-4. Choose what to download:
-   - a video quality;
-   - audio only (MP3);
-   - subtitles (YouTube only).
-5. Click the download button and wait for processing to finish.
-6. Click **Скачать файл**. The browser saves the file to its normal downloads
-   folder.
+1. Выберите **YouTube** или **Instagram**.
+2. Вставьте ссылку на одно видео или одну публикацию.
+3. Нажмите **Получить варианты**.
+4. Выберите, что скачать:
+   - качество видео;
+   - только звук (MP3);
+   - субтитры (только YouTube).
+5. Нажмите кнопку скачивания и дождитесь завершения обработки.
+6. Нажмите **Скачать файл**. Браузер сохранит файл в обычную папку загрузок.
 
-Temporary server-side copies are removed when the page is reloaded or closed,
-when a download for a different link is started, or automatically after
-30 minutes.
+Временные копии на сервере удаляются при перезагрузке или закрытии страницы, при начале скачивания по другой ссылке или автоматически через 30 минут.
 
-## Permitted use
+## Допустимое использование
 
-You may use this application only for material that:
+Вы можете использовать это приложение только для материала, который:
 
-- you own;
-- is in the public domain;
-- is licensed for downloading; or
-- you have explicit permission from the rights holder to download.
+- принадлежит вам;
+- находится в общественном достоянии;
+- лицензирован для скачивания;
+- вы имеете явное разрешение правообладателя на скачивание.
 
-Your use must also comply with the law in your country and with the terms of the
-source platform. Personal use does not automatically make a download legal.
+Ваше использование также должно соответствовать законодательству вашей страны и условиям исходной платформы. Личное использование само по себе не делает скачивание законным.
 
-## Prohibited use
+## Запрещённое использование
 
-Do not use this application to:
+Не используйте это приложение, чтобы:
 
-- download copyrighted material without permission;
-- bypass DRM, paywalls, login restrictions, or other access controls;
-- download private, confidential, or personal content without consent;
-- redistribute, sell, or publicly share downloaded content without the required
-  rights;
-- violate YouTube, Instagram, or any other applicable terms of service;
-- harass, stalk, or infringe the privacy of any person.
+- скачивать материалы, защищённые авторским правом, без разрешения;
+- обходить DRM, платные ограничения, ограничения входа в аккаунт или иные средства контроля доступа;
+- скачивать приватный, конфиденциальный или личный контент без согласия;
+- распространять, продавать или публично делиться скачанным контентом без необходимых прав;
+- нарушать условия использования YouTube, Instagram или любой другой применимой платформы;
+- преследовать, следить за кем-либо или нарушать чью-либо частную жизнь.
 
-The application does not grant any rights to third-party content and must not be
-exposed to a network. You are solely responsible for how you use it. This notice
-is not legal advice, and a download can still violate copyright law or platform
-terms even when the application is technically able to perform it. If you are
-unsure whether a download is allowed, do not download it.
+Приложение не предоставляет никаких прав на сторонний контент и не должно быть доступно из сети. Вы несёте полную ответственность за то, как вы его используете. Это уведомление не является юридической консультацией, и скачивание всё равно может нарушать законодательство об авторском праве или условия платформы, даже если приложение технически способно его выполнить. Если вы не уверены, разрешено ли скачивание, не скачивайте.
